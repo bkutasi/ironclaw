@@ -164,10 +164,12 @@ impl DatabaseConfig {
     }
 }
 
-/// LLM provider configuration (NEAR AI only).
+/// LLM provider configuration (NEAR AI + custom providers).
 #[derive(Debug, Clone)]
 pub struct LlmConfig {
     pub nearai: NearAiConfig,
+    /// Custom provider configurations (from settings.json).
+    pub providers: std::collections::HashMap<String, crate::settings::ProviderConfig>,
 }
 
 /// API mode for NEAR AI.
@@ -231,11 +233,14 @@ impl LlmConfig {
             NearAiApiMode::Responses
         };
 
+        let settings = crate::settings::Settings::load();
+
         Ok(Self {
             nearai: NearAiConfig {
                 // Load model from saved settings first, then env, then default
-                model: crate::settings::Settings::load()
+                model: settings
                     .selected_model
+                    .clone()
                     .or_else(|| optional_env("NEARAI_MODEL").ok().flatten())
                     .unwrap_or_else(|| {
                         "fireworks::accounts/fireworks/models/llama4-maverick-instruct-basic"
@@ -251,6 +256,7 @@ impl LlmConfig {
                 api_mode,
                 api_key,
             },
+            providers: settings.providers.clone(),
         })
     }
 }

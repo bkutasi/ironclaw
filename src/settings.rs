@@ -3,9 +3,29 @@
 //! Stores user preferences in ~/.ironclaw/settings.json.
 //! Settings are loaded with env var > settings.json > default priority.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+
+/// Configuration for an LLM provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderConfig {
+    /// Base URL for the provider API (e.g., "https://openrouter.ai/api/v1").
+    pub base_url: String,
+    /// Environment variable name containing the API key (optional for local providers).
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            api_key_env: None,
+        }
+    }
+}
 
 /// User settings persisted to disk.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -32,9 +52,13 @@ pub struct Settings {
     // Session stored separately in session.json
 
     // === Step 4: Model Selection ===
-    /// Currently selected model.
+    /// Currently selected model (format: "provider/model" or just "model").
     #[serde(default)]
     pub selected_model: Option<String>,
+
+    /// Configured LLM providers.
+    #[serde(default)]
+    pub providers: HashMap<String, ProviderConfig>,
 
     // === Step 5: Embeddings ===
     /// Embeddings configuration.

@@ -461,6 +461,7 @@ impl SetupWizard {
                 api_mode: crate::config::NearAiApiMode::Responses,
                 api_key: None,
             },
+            providers: std::collections::HashMap::new(),
         };
 
         match create_llm_provider(&config, Arc::clone(session)) {

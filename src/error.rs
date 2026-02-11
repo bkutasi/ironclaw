@@ -149,6 +149,9 @@ pub enum LlmError {
     #[error("Session renewal failed for provider {provider}: {reason}")]
     SessionRenewalFailed { provider: String, reason: String },
 
+    #[error("Configuration error: {reason}")]
+    ConfigError { reason: String },
+
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
