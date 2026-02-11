@@ -197,6 +197,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
             finish_reason,
             input_tokens: response.usage.prompt_tokens,
             output_tokens: response.usage.completion_tokens,
+            response_id: response.id,
         })
     }
 
@@ -275,6 +276,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
             finish_reason,
             input_tokens: response.usage.prompt_tokens,
             output_tokens: response.usage.completion_tokens,
+            response_id: response.id,
         })
     }
 
