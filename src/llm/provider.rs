@@ -146,6 +146,8 @@ pub struct CompletionResponse {
     pub finish_reason: FinishReason,
     /// Provider-specific response ID (e.g. for NEAR AI response chaining).
     pub response_id: Option<String>,
+    /// Model's reasoning process when available (e.g., stepfun-ai/step-3.5-flash).
+    pub reasoning: Option<String>,
 }
 
 /// Why the completion finished.
@@ -240,6 +242,8 @@ pub struct ToolCompletionResponse {
     pub finish_reason: FinishReason,
     /// Provider-specific response ID (e.g. for NEAR AI response chaining).
     pub response_id: Option<String>,
+    /// Model's reasoning process when available (e.g., stepfun-ai/step-3.5-flash).
+    pub reasoning: Option<String>,
 }
 
 /// Metadata about a model returned by the provider's API.

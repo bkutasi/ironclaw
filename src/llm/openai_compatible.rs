@@ -1,6 +1,25 @@
 //! Generic OpenAI-compatible API provider implementation.
 //!
-//! This provider works with any OpenAI-compatible endpoint (OpenRouter, local llama.cpp, etc.).
+//! Works with any OpenAI-compatible endpoint including:
+//! - OpenRouter (https://openrouter.ai)
+//! - NVIDIA API (https://integrate.api.nvidia.com)
+//! - Local LLMs (llama.cpp, Jan, LM Studio, etc.)
+//! - OpenAI API
+//! - Any other OpenAI-compatible service
+//!
+//! # Quick Setup
+//!
+//! ## NVIDIA API
+//! ```bash
+//! export NVIDIA_API_KEY="your-ngc-key"
+//! ```
+//! Model: `nvidia/moonshotai/kimi-k2.5`
+//!
+//! ## Local LLM (localhost:3000)
+//! ```bash
+//! # No API key needed for most local providers
+//! ```
+//! Model: `local/your-model-name`
 
 use async_trait::async_trait;
 use reqwest::Client;
@@ -26,6 +45,64 @@ pub struct OpenAiCompatibleConfig {
     pub api_key: Option<secrecy::SecretString>,
     /// Model identifier to use.
     pub model: String,
+}
+
+impl OpenAiCompatibleConfig {
+    /// Create configuration for NVIDIA API.
+    ///
+    /// # Arguments
+    /// * `api_key` - Your NVIDIA NGC API key
+    /// * `model` - Model name (e.g., "moonshotai/kimi-k2.5")
+    pub fn nvidia(api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            provider_name: "nvidia".to_string(),
+            base_url: "https://integrate.api.nvidia.com/v1".to_string(),
+            api_key: Some(secrecy::SecretString::from(api_key.into())),
+            model: model.into(),
+        }
+    }
+
+    /// Create configuration for local LLM (e.g., llama.cpp, Jan, LM Studio).
+    ///
+    /// # Arguments
+    /// * `base_url` - Base URL (e.g., "http://localhost:3000/v1")
+    /// * `model` - Model name (optional for many local providers)
+    pub fn local(base_url: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            provider_name: "local".to_string(),
+            base_url: base_url.into(),
+            api_key: None,
+            model: model.into(),
+        }
+    }
+
+    /// Create configuration for OpenRouter.
+    ///
+    /// # Arguments
+    /// * `api_key` - Your OpenRouter API key
+    /// * `model` - Model name (e.g., "anthropic/claude-3.5-sonnet")
+    pub fn openrouter(api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            provider_name: "openrouter".to_string(),
+            base_url: "https://openrouter.ai/api/v1".to_string(),
+            api_key: Some(secrecy::SecretString::from(api_key.into())),
+            model: model.into(),
+        }
+    }
+
+    /// Create configuration for OpenAI.
+    ///
+    /// # Arguments
+    /// * `api_key` - Your OpenAI API key
+    /// * `model` - Model name (e.g., "gpt-4o")
+    pub fn openai(api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            provider_name: "openai".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            api_key: Some(secrecy::SecretString::from(api_key.into())),
+            model: model.into(),
+        }
+    }
 }
 
 /// Generic OpenAI-compatible API provider.
@@ -57,13 +134,12 @@ impl OpenAiCompatibleProvider {
             .map(|k| k.expose_secret().to_string())
     }
 
+    /// Send a request to the chat completions API.
     async fn send_request<T: Serialize, R: for<'de> Deserialize<'de>>(
         &self,
         body: &T,
     ) -> Result<R, LlmError> {
-        // Note: base_url should already include the /v1 path (e.g., "https://openrouter.ai/api/v1")
         let url = self.api_url("chat/completions");
-
         tracing::debug!("Sending request to {}: {}", self.config.provider_name, url);
 
         let mut request = self
@@ -90,21 +166,7 @@ impl OpenAiCompatibleProvider {
         tracing::trace!("{} response body: {}", self.config.provider_name, response_text);
 
         if !status.is_success() {
-            if status.as_u16() == 401 {
-                return Err(LlmError::AuthFailed {
-                    provider: self.config.provider_name.clone(),
-                });
-            }
-            if status.as_u16() == 429 {
-                return Err(LlmError::RateLimited {
-                    provider: self.config.provider_name.clone(),
-                    retry_after: None,
-                });
-            }
-            return Err(LlmError::RequestFailed {
-                provider: self.config.provider_name.clone(),
-                reason: format!("HTTP {}: {}", status, response_text),
-            });
+            return Err(self.parse_error(status, &response_text));
         }
 
         serde_json::from_str(&response_text).map_err(|e| LlmError::InvalidResponse {
@@ -113,11 +175,60 @@ impl OpenAiCompatibleProvider {
         })
     }
 
+    /// Parse HTTP error response into appropriate LlmError.
+    fn parse_error(&self, status: reqwest::StatusCode, response_text: &str) -> LlmError {
+        match status.as_u16() {
+            401 => LlmError::AuthFailed {
+                provider: self.config.provider_name.clone(),
+            },
+            429 => LlmError::RateLimited {
+                provider: self.config.provider_name.clone(),
+                retry_after: None,
+            },
+            _ => LlmError::RequestFailed {
+                provider: self.config.provider_name.clone(),
+                reason: format!("HTTP {}: {}", status, response_text),
+            },
+        }
+    }
+
+    /// Parse finish reason from string.
+    fn parse_finish_reason(&self, reason: Option<&str>, has_tool_calls: bool) -> FinishReason {
+        match reason {
+            Some("stop") => FinishReason::Stop,
+            Some("length") => FinishReason::Length,
+            Some("tool_calls") => FinishReason::ToolUse,
+            Some("content_filter") => FinishReason::ContentFilter,
+            _ => {
+                if has_tool_calls {
+                    FinishReason::ToolUse
+                } else {
+                    FinishReason::Unknown
+                }
+            }
+        }
+    }
+
+    /// Parse tool calls from response.
+    fn parse_tool_calls(&self, tool_calls: Option<Vec<ChatCompletionToolCall>>) -> Vec<ToolCall> {
+        tool_calls
+            .unwrap_or_default()
+            .into_iter()
+            .map(|tc| {
+                let arguments = serde_json::from_str(&tc.function.arguments)
+                    .unwrap_or(serde_json::Value::Object(Default::default()));
+                ToolCall {
+                    id: tc.id,
+                    name: tc.function.name,
+                    arguments,
+                }
+            })
+            .collect()
+    }
+
     /// Fetch available models.
     pub async fn list_models(&self) -> Result<Vec<String>, LlmError> {
-        // Note: base_url should already include the /v1 path
         let url = self.api_url("models");
-
         let mut request = self.client.get(&url);
 
         if let Some(api_key) = self.api_key() {
@@ -133,10 +244,7 @@ impl OpenAiCompatibleProvider {
         let response_text = response.text().await.unwrap_or_default();
 
         if !status.is_success() {
-            return Err(LlmError::RequestFailed {
-                provider: self.config.provider_name.clone(),
-                reason: format!("HTTP {}: {}", status, response_text),
-            });
+            return Err(self.parse_error(status, &response_text));
         }
 
         #[derive(Deserialize)]
@@ -149,11 +257,12 @@ impl OpenAiCompatibleProvider {
             id: String,
         }
 
-        let resp: ModelsResponse =
-            serde_json::from_str(&response_text).map_err(|e| LlmError::InvalidResponse {
+        let resp: ModelsResponse = serde_json::from_str(&response_text).map_err(|e| {
+            LlmError::InvalidResponse {
                 provider: self.config.provider_name.clone(),
                 reason: format!("JSON parse error: {}", e),
-            })?;
+            }
+        })?;
 
         Ok(resp.data.into_iter().map(|m| m.id).collect())
     }
@@ -184,13 +293,13 @@ impl LlmProvider for OpenAiCompatibleProvider {
         })?;
 
         let content = choice.message.content.unwrap_or_default();
-        let finish_reason = match choice.finish_reason.as_deref() {
-            Some("stop") => FinishReason::Stop,
-            Some("length") => FinishReason::Length,
-            Some("tool_calls") => FinishReason::ToolUse,
-            Some("content_filter") => FinishReason::ContentFilter,
-            _ => FinishReason::Unknown,
-        };
+        let finish_reason = self.parse_finish_reason(choice.finish_reason.as_deref(), false);
+
+        // Extract reasoning from either `reasoning` or `reasoning_content` field
+        let reasoning = choice
+            .message
+            .reasoning
+            .or(choice.message.reasoning_content);
 
         Ok(CompletionResponse {
             content,
@@ -198,6 +307,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
             input_tokens: response.usage.prompt_tokens,
             output_tokens: response.usage.completion_tokens,
             response_id: response.id,
+            reasoning,
         })
     }
 
@@ -240,35 +350,15 @@ impl LlmProvider for OpenAiCompatibleProvider {
         })?;
 
         let content = choice.message.content;
-        let tool_calls: Vec<ToolCall> = choice
-            .message
-            .tool_calls
-            .unwrap_or_default()
-            .into_iter()
-            .map(|tc| {
-                let arguments = serde_json::from_str(&tc.function.arguments)
-                    .unwrap_or(serde_json::Value::Object(Default::default()));
-                ToolCall {
-                    id: tc.id,
-                    name: tc.function.name,
-                    arguments,
-                }
-            })
-            .collect();
+        let tool_calls = self.parse_tool_calls(choice.message.tool_calls);
+        let finish_reason =
+            self.parse_finish_reason(choice.finish_reason.as_deref(), !tool_calls.is_empty());
 
-        let finish_reason = match choice.finish_reason.as_deref() {
-            Some("stop") => FinishReason::Stop,
-            Some("length") => FinishReason::Length,
-            Some("tool_calls") => FinishReason::ToolUse,
-            Some("content_filter") => FinishReason::ContentFilter,
-            _ => {
-                if !tool_calls.is_empty() {
-                    FinishReason::ToolUse
-                } else {
-                    FinishReason::Unknown
-                }
-            }
-        };
+        // Extract reasoning from either `reasoning` or `reasoning_content` field
+        let reasoning = choice
+            .message
+            .reasoning
+            .or(choice.message.reasoning_content);
 
         Ok(ToolCompletionResponse {
             content,
@@ -277,6 +367,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
             input_tokens: response.usage.prompt_tokens,
             output_tokens: response.usage.completion_tokens,
             response_id: response.id,
+            reasoning,
         })
     }
 
@@ -285,6 +376,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
     }
 
     fn cost_per_token(&self) -> (Decimal, Decimal) {
+        // Default costs - override for specific providers
         (dec!(0.000003), dec!(0.000015))
     }
 
@@ -345,7 +437,11 @@ impl From<ChatMessage> for ChatCompletionMessage {
         });
         Self {
             role: role.to_string(),
-            content: if msg.content.is_empty() { None } else { Some(msg.content) },
+            content: if msg.content.is_empty() {
+                None
+            } else {
+                Some(msg.content)
+            },
             tool_call_id: msg.tool_call_id,
             name: msg.name,
             tool_calls,
@@ -390,6 +486,12 @@ struct ChatCompletionResponseMessage {
     #[allow(dead_code)]
     role: String,
     content: Option<String>,
+    /// Reasoning content from models that return thinking process separately (e.g., stepfun-ai models)
+    #[serde(default)]
+    reasoning: Option<String>,
+    /// Alternative field name for reasoning content used by some providers
+    #[serde(default, rename = "reasoning_content")]
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<ChatCompletionToolCall>>,
 }
 
@@ -447,6 +549,24 @@ mod tests {
         assert_eq!(chat_msg.content, None);
     }
 
+    #[test]
+    fn test_nvidia_config() {
+        let config = OpenAiCompatibleConfig::nvidia("test-key", "moonshotai/kimi-k2.5");
+        assert_eq!(config.provider_name, "nvidia");
+        assert_eq!(config.base_url, "https://integrate.api.nvidia.com/v1");
+        assert_eq!(config.model, "moonshotai/kimi-k2.5");
+        assert!(config.api_key.is_some());
+    }
+
+    #[test]
+    fn test_local_config() {
+        let config = OpenAiCompatibleConfig::local("http://localhost:3000/v1", "llama-3.2");
+        assert_eq!(config.provider_name, "local");
+        assert_eq!(config.base_url, "http://localhost:3000/v1");
+        assert_eq!(config.model, "llama-3.2");
+        assert!(config.api_key.is_none());
+    }
+
     /// Integration test for local LLM providers.
     ///
     /// Configure via environment variables:
@@ -460,15 +580,13 @@ mod tests {
     async fn test_local_llm_completion() {
         let base_url = std::env::var("LOCAL_LLM_URL")
             .expect("Set LOCAL_LLM_URL (e.g., http://localhost:3000/v1)");
-        let model = std::env::var("LOCAL_LLM_MODEL")
-            .expect("Set LOCAL_LLM_MODEL (e.g., Jan-V3)");
+        let model = std::env::var("LOCAL_LLM_MODEL").expect("Set LOCAL_LLM_MODEL (e.g., Jan-V3)");
         let api_key = std::env::var("LOCAL_LLM_API_KEY").ok();
 
+        let config = OpenAiCompatibleConfig::local(base_url, model);
         let config = OpenAiCompatibleConfig {
-            provider_name: "local".to_string(),
-            base_url,
             api_key: api_key.map(secrecy::SecretString::from),
-            model,
+            ..config
         };
 
         let provider = OpenAiCompatibleProvider::new(config).expect("Failed to create provider");
@@ -478,62 +596,37 @@ mod tests {
             temperature: Some(0.1),
             max_tokens: Some(10),
             stop_sequences: None,
+            metadata: std::collections::HashMap::new(),
         };
 
         let response = provider.complete(request).await.expect("Completion failed");
 
         println!("Response: {:?}", response);
         assert!(!response.content.is_empty(), "Response should not be empty");
-        assert!(response.input_tokens > 0 || response.input_tokens == 0, "Should have token count");
     }
 
-    /// Integration test for local LLM with tool calling.
+    /// Integration test for NVIDIA API.
     ///
-    /// Run with: cargo test test_local_llm_with_tools --ignored -- --nocapture
+    /// Run with: cargo test test_nvidia_api --ignored -- --nocapture
     #[tokio::test]
-    #[ignore = "Requires local LLM server. Set LOCAL_LLM_URL and LOCAL_LLM_MODEL env vars."]
-    async fn test_local_llm_with_tools() {
-        let base_url = std::env::var("LOCAL_LLM_URL")
-            .expect("Set LOCAL_LLM_URL (e.g., http://localhost:3000/v1)");
-        let model = std::env::var("LOCAL_LLM_MODEL")
-            .expect("Set LOCAL_LLM_MODEL (e.g., Jan-V3)");
-        let api_key = std::env::var("LOCAL_LLM_API_KEY").ok();
+    #[ignore = "Requires NVIDIA_API_KEY env var."]
+    async fn test_nvidia_api() {
+        let api_key = std::env::var("NVIDIA_API_KEY").expect("Set NVIDIA_API_KEY");
 
-        let config = OpenAiCompatibleConfig {
-            provider_name: "local".to_string(),
-            base_url,
-            api_key: api_key.map(secrecy::SecretString::from),
-            model,
-        };
-
+        let config = OpenAiCompatibleConfig::nvidia(api_key, "moonshotai/kimi-k2.5");
         let provider = OpenAiCompatibleProvider::new(config).expect("Failed to create provider");
 
-        let tools = vec![crate::llm::provider::ToolDefinition {
-            name: "get_weather".to_string(),
-            description: "Get the current weather for a location".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "location": {
-                        "type": "string",
-                        "description": "City name"
-                    }
-                },
-                "required": ["location"]
-            }),
-        }];
-
-        let request = ToolCompletionRequest {
-            messages: vec![ChatMessage::user("What's the weather in Tokyo?")],
-            tools,
-            tool_choice: Some("auto".to_string()),
-            temperature: Some(0.1),
-            max_tokens: Some(100),
+        let request = CompletionRequest {
+            messages: vec![ChatMessage::user("Hello, how are you?")],
+            temperature: Some(0.7),
+            max_tokens: Some(50),
+            stop_sequences: None,
+            metadata: std::collections::HashMap::new(),
         };
 
-        let response = provider.complete_with_tools(request).await.expect("Tool completion failed");
+        let response = provider.complete(request).await.expect("Completion failed");
 
         println!("Response: {:?}", response);
-        // Note: Not all local models support tool calling, so we just check it doesn't crash
+        assert!(!response.content.is_empty(), "Response should not be empty");
     }
 }

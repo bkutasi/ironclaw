@@ -427,13 +427,14 @@ impl LlmProvider for NearAiProvider {
                         input_tokens: 0,
                         output_tokens: 0,
                     });
-                    return Ok(CompletionResponse {
-                        content: text,
-                        finish_reason: FinishReason::Stop,
-                        input_tokens: usage.input_tokens,
-                        output_tokens: usage.output_tokens,
-                        response_id: None,
-                    });
+            return Ok(CompletionResponse {
+                content: text,
+                finish_reason: FinishReason::Stop,
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                response_id: None,
+                reasoning: None,
+            });
                 }
 
                 // Check if it's a JSON string (quoted)
@@ -444,14 +445,15 @@ impl LlmProvider for NearAiProvider {
                     raw_text.to_string()
                 };
 
-                tracing::info!("NEAR AI returned plain text response");
-                return Ok(CompletionResponse {
-                    content: text,
-                    finish_reason: FinishReason::Stop,
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    response_id: None,
-                });
+        tracing::info!("NEAR AI returned plain text response");
+        return Ok(CompletionResponse {
+            content: text,
+            finish_reason: FinishReason::Stop,
+            input_tokens: 0,
+            output_tokens: 0,
+            response_id: None,
+            reasoning: None,
+        });
             }
             Err(e) => return Err(e),
         };
@@ -512,13 +514,14 @@ impl LlmProvider for NearAiProvider {
             self.store_chain(tid, response.id.clone(), 0);
         }
 
-        Ok(CompletionResponse {
-            content: text,
-            finish_reason: FinishReason::Stop,
-            input_tokens: response.usage.input_tokens,
-            output_tokens: response.usage.output_tokens,
-            response_id: Some(response.id),
-        })
+    Ok(CompletionResponse {
+        content: text,
+        finish_reason: FinishReason::Stop,
+        input_tokens: response.usage.input_tokens,
+        output_tokens: response.usage.output_tokens,
+        response_id: Some(response.id),
+        reasoning: None,
+    })
     }
 
     async fn complete_with_tools(
@@ -640,14 +643,15 @@ impl LlmProvider for NearAiProvider {
                         tool_calls.len()
                     );
 
-                    return Ok(ToolCompletionResponse {
-                        content: if text.is_empty() { None } else { Some(text) },
-                        tool_calls,
-                        finish_reason,
-                        input_tokens: usage.input_tokens,
-                        output_tokens: usage.output_tokens,
-                        response_id: None,
-                    });
+        return Ok(ToolCompletionResponse {
+            content: if text.is_empty() { None } else { Some(text) },
+            tool_calls,
+            finish_reason,
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            response_id: None,
+            reasoning: None,
+        });
                 }
 
                 let text = if raw_text.starts_with('"') {
@@ -657,15 +661,16 @@ impl LlmProvider for NearAiProvider {
                     raw_text.to_string()
                 };
 
-                tracing::info!("NEAR AI returned plain text response (tool request)");
-                return Ok(ToolCompletionResponse {
-                    content: Some(text),
-                    tool_calls: vec![],
-                    finish_reason: FinishReason::Stop,
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    response_id: None,
-                });
+        tracing::info!("NEAR AI returned plain text response (tool request)");
+        return Ok(ToolCompletionResponse {
+            content: Some(text),
+            tool_calls: vec![],
+            finish_reason: FinishReason::Stop,
+            input_tokens: 0,
+            output_tokens: 0,
+            response_id: None,
+            reasoning: None,
+        });
             }
             Err(e) => return Err(e),
         };
@@ -723,14 +728,15 @@ impl LlmProvider for NearAiProvider {
             self.store_chain(tid, response.id.clone(), total_input_count);
         }
 
-        Ok(ToolCompletionResponse {
-            content: if text.is_empty() { None } else { Some(text) },
-            tool_calls,
-            finish_reason,
-            input_tokens: response.usage.input_tokens,
-            output_tokens: response.usage.output_tokens,
-            response_id: Some(response.id),
-        })
+    Ok(ToolCompletionResponse {
+        content: if text.is_empty() { None } else { Some(text) },
+        tool_calls,
+        finish_reason,
+        input_tokens: response.usage.input_tokens,
+        output_tokens: response.usage.output_tokens,
+        response_id: Some(response.id),
+        reasoning: None,
+    })
     }
 
     fn model_name(&self) -> &str {

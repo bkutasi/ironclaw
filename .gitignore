@@ -1,9 +1,30 @@
-
+# Environment files
 .env
 .env.local
+.env.*.local
 
+# Build artifacts
 target/
-
-# WASM build artifacts (loaded from disk, not bundled)
 *.wasm
 
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Test scripts (development only)
+test_*.sh
+
+# Logs
+*.log
+
+# OpenCode development tools
+.opencode/
+
+# Temporary files
+*.tmp
+*.bak

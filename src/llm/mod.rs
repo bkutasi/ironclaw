@@ -2,10 +2,32 @@
 //!
 //! Supports multiple providers:
 //! - **NEAR AI** (Responses API or Chat Completions API)
+//! - **NVIDIA API** (https://integrate.api.nvidia.com)
 //! - **OpenRouter** and other OpenAI-compatible APIs
-//! - **Local** providers like llama.cpp
+//! - **Local** providers like llama.cpp, Jan, LM Studio
+//!
+//! # Quick Setup
+//!
+//! ## NVIDIA API
+//! ```bash
+//! export NVIDIA_API_KEY="your-ngc-key"
+//! ```
+//! Then use model: `nvidia/moonshotai/kimi-k2.5`
+//!
+//! ## Local LLM (localhost:3000)
+//! ```bash
+//! # No API key needed for most local providers
+//! ```
+//! Then use model: `local/your-model-name`
+//!
+//! ## OpenRouter
+//! ```bash
+//! export OPENROUTER_API_KEY="your-key"
+//! ```
+//! Then use model: `openrouter/anthropic/claude-3.5-sonnet`
 //!
 //! Provider routing is done via prefix in `selected_model`:
+//! - `nvidia/moonshotai/kimi-k2.5` → NVIDIA API
 //! - `openrouter/pony-alpha` → OpenRouter API
 //! - `local/llama-3.2-3b` → localhost:3000 (llama.cpp)
 //! - `fireworks::accounts/...` → NEAR AI proxy (existing default)
@@ -119,6 +141,12 @@ fn create_custom_provider(
     config: &ProviderConfig,
     model: &str,
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
+    // Check for built-in presets first
+    if let Some(preset) = get_preset_config(provider_name, model) {
+        return Ok(Arc::new(OpenAiCompatibleProvider::new(preset)?));
+    }
+
+    // Fall back to custom config
     if config.base_url.trim().is_empty() {
         return Err(LlmError::ConfigError {
             reason: format!("Provider '{}' has empty base_url", provider_name),
@@ -157,4 +185,28 @@ fn create_custom_provider(
     };
 
     Ok(Arc::new(OpenAiCompatibleProvider::new(openai_config)?))
+}
+
+/// Get preset configuration for known providers.
+fn get_preset_config(provider_name: &str, model: &str) -> Option<OpenAiCompatibleConfig> {
+    match provider_name {
+        "nvidia" => {
+            let api_key = std::env::var("NVIDIA_API_KEY").ok()?;
+            Some(OpenAiCompatibleConfig::nvidia(api_key, model))
+        }
+        "local" => {
+            let base_url = std::env::var("LOCAL_LLM_URL")
+                .unwrap_or_else(|_| "http://localhost:3000/v1".to_string());
+            Some(OpenAiCompatibleConfig::local(base_url, model))
+        }
+        "openrouter" => {
+            let api_key = std::env::var("OPENROUTER_API_KEY").ok()?;
+            Some(OpenAiCompatibleConfig::openrouter(api_key, model))
+        }
+        "openai" => {
+            let api_key = std::env::var("OPENAI_API_KEY").ok()?;
+            Some(OpenAiCompatibleConfig::openai(api_key, model))
+        }
+        _ => None,
+    }
 }

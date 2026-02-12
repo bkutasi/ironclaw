@@ -206,13 +206,14 @@ impl LlmProvider for NearAiChatProvider {
             _ => FinishReason::Unknown,
         };
 
-        Ok(CompletionResponse {
-            content,
-            finish_reason,
-            input_tokens: response.usage.prompt_tokens,
-            output_tokens: response.usage.completion_tokens,
-            response_id: None,
-        })
+    Ok(CompletionResponse {
+        content,
+        finish_reason,
+        input_tokens: response.usage.prompt_tokens,
+        output_tokens: response.usage.completion_tokens,
+        response_id: None,
+        reasoning: None,
+    })
     }
 
     async fn complete_with_tools(
@@ -287,14 +288,15 @@ impl LlmProvider for NearAiChatProvider {
             }
         };
 
-        Ok(ToolCompletionResponse {
-            content,
-            tool_calls,
-            finish_reason,
-            input_tokens: response.usage.prompt_tokens,
-            output_tokens: response.usage.completion_tokens,
-            response_id: None,
-        })
+    Ok(ToolCompletionResponse {
+        content,
+        tool_calls,
+        finish_reason,
+        input_tokens: response.usage.prompt_tokens,
+        output_tokens: response.usage.completion_tokens,
+        response_id: None,
+        reasoning: None,
+    })
     }
 
     fn model_name(&self) -> &str {

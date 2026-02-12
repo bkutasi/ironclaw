@@ -190,13 +190,14 @@ impl WorkerHttpClient {
                 reason: format!("failed to parse LLM response: {}", e),
             })?;
 
-        Ok(CompletionResponse {
-            content: proxy_resp.content,
-            input_tokens: proxy_resp.input_tokens,
-            output_tokens: proxy_resp.output_tokens,
-            finish_reason: parse_finish_reason(&proxy_resp.finish_reason),
-            response_id: None,
-        })
+    Ok(CompletionResponse {
+        content: proxy_resp.content,
+        input_tokens: proxy_resp.input_tokens,
+        output_tokens: proxy_resp.output_tokens,
+        finish_reason: parse_finish_reason(&proxy_resp.finish_reason),
+        response_id: None,
+        reasoning: None,
+    })
     }
 
     /// Proxy an LLM tool completion request through the orchestrator.
@@ -236,14 +237,15 @@ impl WorkerHttpClient {
                 reason: format!("failed to parse tool completion response: {}", e),
             })?;
 
-        Ok(ToolCompletionResponse {
-            content: proxy_resp.content,
-            tool_calls: proxy_resp.tool_calls,
-            input_tokens: proxy_resp.input_tokens,
-            output_tokens: proxy_resp.output_tokens,
-            finish_reason: parse_finish_reason(&proxy_resp.finish_reason),
-            response_id: None,
-        })
+    Ok(ToolCompletionResponse {
+        content: proxy_resp.content,
+        tool_calls: proxy_resp.tool_calls,
+        input_tokens: proxy_resp.input_tokens,
+        output_tokens: proxy_resp.output_tokens,
+        finish_reason: parse_finish_reason(&proxy_resp.finish_reason),
+        response_id: None,
+        reasoning: None,
+    })
     }
 
     /// Report status to the orchestrator.
