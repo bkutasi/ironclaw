@@ -4,6 +4,7 @@
 //! Similar concepts have similar vectors, enabling semantic search.
 
 use async_trait::async_trait;
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 
 /// Error type for embedding operations.
@@ -215,17 +216,20 @@ impl EmbeddingProvider for OpenAiEmbeddings {
 
 /// NEAR AI embedding provider using the NEAR AI API.
 ///
-/// Uses the same session-based auth as the LLM provider.
+/// Uses session-based auth or custom API key authentication.
 pub struct NearAiEmbeddings {
     client: reqwest::Client,
     base_url: String,
-    session: std::sync::Arc<crate::llm::SessionManager>,
+    /// Optional session manager for session-based auth.
+    session: Option<std::sync::Arc<crate::llm::SessionManager>>,
+    /// Optional API key for custom authentication (e.g., NVIDIA, Azure).
+    api_key: Option<String>,
     model: String,
     dimension: usize,
 }
 
 impl NearAiEmbeddings {
-    /// Create a new NEAR AI embedding provider.
+    /// Create a new NEAR AI embedding provider with session-based auth.
     ///
     /// Uses the same session manager as the LLM provider for auth.
     pub fn new(
@@ -235,7 +239,23 @@ impl NearAiEmbeddings {
         Self {
             client: reqwest::Client::new(),
             base_url: base_url.into(),
-            session,
+            session: Some(session),
+            api_key: None,
+            model: "text-embedding-3-small".to_string(),
+            dimension: 1536,
+        }
+    }
+
+    /// Create a new NEAR AI embedding provider with custom API key auth.
+    ///
+    /// This is used for providers like NVIDIA, Azure OpenAI, etc. that use
+    /// Bearer token authentication instead of session-based auth.
+    pub fn with_api_key(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            base_url: base_url.into(),
+            session: None,
+            api_key: Some(api_key.into()),
             model: "text-embedding-3-small".to_string(),
             dimension: 1536,
         }
@@ -306,18 +326,25 @@ impl EmbeddingProvider for NearAiEmbeddings {
             input: texts,
         };
 
-        let token = self
-            .session
-            .get_token()
-            .await
-            .map_err(|_| EmbeddingError::AuthFailed)?;
+        // Get authorization header - prefer API key if provided, otherwise use session
+        let auth_value = if let Some(ref api_key) = self.api_key {
+            format!("Bearer {}", api_key)
+        } else if let Some(ref session) = self.session {
+            let token = session
+                .get_token()
+                .await
+                .map_err(|_| EmbeddingError::AuthFailed)?;
+            format!("Bearer {}", token.expose_secret())
+        } else {
+            return Err(EmbeddingError::AuthFailed);
+        };
 
         let url = format!("{}/v1/embeddings", self.base_url);
 
         let response = self
             .client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", token.expose_secret()))
+            .header("Authorization", auth_value)
             .json(&request)
             .send()
             .await?;
@@ -347,6 +374,168 @@ impl EmbeddingProvider for NearAiEmbeddings {
         }
 
         let result: NearAiEmbeddingResponse = response.json().await.map_err(|e| {
+            EmbeddingError::InvalidResponse(format!("Failed to parse response: {}", e))
+        })?;
+
+        Ok(result.data.into_iter().map(|d| d.embedding).collect())
+    }
+}
+
+/// OpenAI-compatible embedding provider (e.g., Ollama, llama.cpp, vLLM).
+///
+/// Supports any endpoint that implements the OpenAI /v1/embeddings API.
+/// Defaults to Ollama at http://localhost:11434 if no base_url is provided.
+pub struct OpenAiCompatibleEmbeddings {
+    client: reqwest::Client,
+    base_url: String,
+    api_key: Option<String>,
+    model: String,
+    dimension: usize,
+}
+
+impl OpenAiCompatibleEmbeddings {
+    /// Create a new OpenAI-compatible embedding provider from config.
+    pub fn new(config: crate::config::OpenAiCompatibleEmbeddingsConfig) -> Self {
+        let dimension = config.dimensions.unwrap_or(768);
+        Self {
+            client: reqwest::Client::new(),
+            base_url: config.base_url,
+            api_key: config.api_key.map(|k| k.expose_secret().to_string()),
+            model: config.model,
+            dimension,
+        }
+    }
+
+    /// Create a new OpenAI-compatible embedding provider with explicit values.
+    ///
+    /// Defaults to Ollama at http://localhost:11434 if base_url is empty.
+    pub fn with_params(
+        base_url: impl Into<String>,
+        api_key: Option<impl Into<String>>,
+        model: impl Into<String>,
+        dimension: usize,
+    ) -> Self {
+        let base_url = base_url.into();
+        // Default to Ollama if no base_url provided
+        let base_url = if base_url.is_empty() {
+            "http://localhost:11434".to_string()
+        } else {
+            base_url
+        };
+        Self {
+            client: reqwest::Client::new(),
+            base_url,
+            api_key: api_key.map(|k| k.into()),
+            model: model.into(),
+            dimension,
+        }
+    }
+
+    /// Create with default Ollama settings (nomic-embed-text-v1, 768 dimensions).
+    pub fn ollama_defaults() -> Self {
+        Self::with_params(
+            "http://localhost:11434",
+            None::<String>,
+            "nomic-embed-text-v1",
+            768,
+        )
+    }
+}
+
+/// Request/Response structs for OpenAI-compatible embeddings API.
+/// Reuses the same format as OpenAiEmbeddings.
+#[derive(Debug, Serialize)]
+struct OpenAiCompatibleEmbeddingRequest<'a> {
+    model: &'a str,
+    input: &'a [String],
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiCompatibleEmbeddingResponse {
+    data: Vec<OpenAiCompatibleEmbeddingData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiCompatibleEmbeddingData {
+    embedding: Vec<f32>,
+}
+
+#[async_trait]
+impl EmbeddingProvider for OpenAiCompatibleEmbeddings {
+    fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    fn model_name(&self) -> &str {
+        &self.model
+    }
+
+    fn max_input_length(&self) -> usize {
+        32_000
+    }
+
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
+        if text.len() > self.max_input_length() {
+            return Err(EmbeddingError::TextTooLong {
+                length: text.len(),
+                max: self.max_input_length(),
+            });
+        }
+
+        let embeddings = self.embed_batch(&[text.to_string()]).await?;
+        embeddings
+            .into_iter()
+            .next()
+            .ok_or_else(|| EmbeddingError::InvalidResponse("No embedding returned".to_string()))
+    }
+
+    async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let request = OpenAiCompatibleEmbeddingRequest {
+            model: &self.model,
+            input: texts,
+        };
+
+        let url = format!("{}/v1/embeddings", self.base_url.trim_end_matches('/'));
+
+        let mut request_builder = self.client.post(&url).json(&request);
+
+        // Add Authorization header if API key is present
+        if let Some(ref api_key) = self.api_key {
+            request_builder =
+                request_builder.header("Authorization", format!("Bearer {}", api_key));
+        }
+
+        let response = request_builder.send().await?;
+
+        let status = response.status();
+
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(EmbeddingError::AuthFailed);
+        }
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .map(std::time::Duration::from_secs);
+            return Err(EmbeddingError::RateLimited { retry_after });
+        }
+
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(EmbeddingError::HttpError(format!(
+                "Status {}: {}",
+                status, error_text
+            )));
+        }
+
+        let result: OpenAiCompatibleEmbeddingResponse = response.json().await.map_err(|e| {
             EmbeddingError::InvalidResponse(format!("Failed to parse response: {}", e))
         })?;
 

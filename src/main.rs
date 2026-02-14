@@ -38,7 +38,7 @@ use ironclaw::{
         mcp::{McpClient, McpSessionManager, config::load_mcp_servers_from_db, is_authenticated},
         wasm::{WasmToolLoader, WasmToolRuntime, load_dev_tools},
     },
-    workspace::{EmbeddingProvider, NearAiEmbeddings, OpenAiEmbeddings, Workspace},
+    workspace::{EmbeddingProvider, NearAiEmbeddings, OpenAiCompatibleEmbeddings, OpenAiEmbeddings, Workspace},
 };
 
 #[cfg(feature = "libsql")]
@@ -109,16 +109,103 @@ async fn main() -> anyhow::Result<()> {
             let embeddings: Option<Arc<dyn ironclaw::workspace::EmbeddingProvider>> =
                 if config.embeddings.enabled {
                     match config.embeddings.provider.as_str() {
-                        "nearai" => Some(Arc::new(
-                            ironclaw::workspace::NearAiEmbeddings::new(
-                                &config.llm.nearai.base_url,
-                                session,
-                            )
-                            .with_model(&config.embeddings.model, 1536),
-                        )),
-                        _ => {
+                        "nearai" => {
+                            // DEPRECATION: nearai provider is deprecated
+                            tracing::warn!(
+                                "EMBEDDING_PROVIDER=nearai is deprecated. \
+                                 Please migrate to EMBEDDING_PROVIDER=openai_compatible."
+                            );
+                            tracing::info!(
+                                "Embeddings provider: NEAR AI (deprecated, model: {})",
+                                config.embeddings.model
+                            );
+
+                            // Determine dimension based on model
+                            let dimension = match config.embeddings.model.as_str() {
+                                "nv-embed-v1" => 4096,
+                                "text-embedding-3-large" => 3072,
+                                _ => 1536,
+                            };
+
+                            // Use custom base_url if provided, otherwise fall back to nearai config
+                            let base_url = config
+                                .embeddings
+                                .base_url
+                                .clone()
+                                .unwrap_or_else(|| config.llm.nearai.base_url.clone());
+
+                            // Prefer custom API key if provided (e.g., for NVIDIA), otherwise use session
+                            if let Some(api_key) = config.embeddings.api_key() {
+                                Some(Arc::new(
+                                    ironclaw::workspace::NearAiEmbeddings::with_api_key(
+                                        &base_url, api_key,
+                                    )
+                                    .with_model(&config.embeddings.model, dimension),
+                                ))
+                            } else {
+                                Some(Arc::new(
+                                    ironclaw::workspace::NearAiEmbeddings::new(&base_url, session)
+                                        .with_model(&config.embeddings.model, dimension),
+                                ))
+                            }
+                        }
+                        "openai_compatible" => {
+                            // Use openai_compatible config if available
+                            if let Some(ref openai_config) = config.embeddings.openai_compatible {
+                                tracing::info!(
+                                    "Embeddings provider: OpenAI-compatible ({}, model: {})",
+                                    openai_config.base_url,
+                                    openai_config.model
+                                );
+                                Some(Arc::new(
+                                    ironclaw::workspace::OpenAiCompatibleEmbeddings::new(
+                                        openai_config.clone(),
+                                    ),
+                                ))
+                            } else {
+                                tracing::warn!(
+                                    "Embeddings provider set to 'openai_compatible' but config not available"
+                                );
+                                None
+                            }
+                        }
+                        "openai" => {
+                            // Explicit OpenAI provider
                             if let Some(api_key) = config.embeddings.openai_api_key() {
+                                tracing::info!(
+                                    "Embeddings provider: OpenAI (model: {})",
+                                    config.embeddings.model
+                                );
                                 let dim = match config.embeddings.model.as_str() {
+                                    "nv-embed-v1" => 4096,
+                                    "text-embedding-3-large" => 3072,
+                                    _ => 1536,
+                                };
+                                Some(Arc::new(ironclaw::workspace::OpenAiEmbeddings::with_model(
+                                    api_key,
+                                    &config.embeddings.model,
+                                    dim,
+                                )))
+                            } else {
+                                tracing::warn!(
+                                    "Embeddings provider set to 'openai' but OPENAI_API_KEY not set"
+                                );
+                                None
+                            }
+                        }
+                        other => {
+                            // Unknown provider - try OpenAI as fallback
+                            tracing::warn!(
+                                "Unknown EMBEDDING_PROVIDER '{}', falling back to OpenAI",
+                                other
+                            );
+                            if let Some(api_key) = config.embeddings.openai_api_key() {
+                                tracing::info!(
+                                    "Embeddings provider: OpenAI (fallback, model: {})",
+                                    config.embeddings.model
+                                );
+                                let dim = match config.embeddings.model.as_str() {
+                                    "nv-embed-v1" => 4096,
                                     "text-embedding-3-large" => 3072,
                                     _ => 1536,
                                 };
@@ -484,26 +571,102 @@ async fn main() -> anyhow::Result<()> {
     let embeddings: Option<Arc<dyn EmbeddingProvider>> = if config.embeddings.enabled {
         match config.embeddings.provider.as_str() {
             "nearai" => {
+                // DEPRECATION: nearai provider is deprecated, suggest openai_compatible
+                tracing::warn!(
+                    "EMBEDDING_PROVIDER=nearai is deprecated and will be removed. \
+                     Please migrate to EMBEDDING_PROVIDER=openai_compatible with \
+                     EMBEDDING_BASE_URL and LLM_API_KEY set. \
+                     See https://docs.ironclaw.ai/embeddings for migration guide."
+                );
                 tracing::info!(
-                    "Embeddings enabled via NEAR AI (model: {})",
+                    "Embeddings provider: NEAR AI (deprecated, model: {})",
                     config.embeddings.model
                 );
-                Some(Arc::new(
-                    NearAiEmbeddings::new(&config.llm.nearai.base_url, session.clone())
-                        .with_model(&config.embeddings.model, 1536),
-                ))
+
+                // Determine dimension based on model
+                let dimension = match config.embeddings.model.as_str() {
+                    "nv-embed-v1" => 4096,
+                    "text-embedding-3-large" => 3072,
+                    _ => 1536, // text-embedding-3-small, ada-002, etc.
+                };
+
+                // Use custom base_url if provided, otherwise fall back to nearai config
+                let base_url = config
+                    .embeddings
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| config.llm.nearai.base_url.clone());
+
+                // Prefer custom API key if provided (e.g., for NVIDIA), otherwise use session
+                if let Some(api_key) = config.embeddings.api_key() {
+                    Some(Arc::new(
+                        NearAiEmbeddings::with_api_key(&base_url, api_key)
+                            .with_model(&config.embeddings.model, dimension),
+                    ))
+                } else {
+                    Some(Arc::new(
+                        NearAiEmbeddings::new(&base_url, session.clone())
+                            .with_model(&config.embeddings.model, dimension),
+                    ))
+                }
             }
-            _ => {
-                // Default to OpenAI for unknown providers
+            "openai_compatible" => {
+                // Use openai_compatible config if available
+                if let Some(ref openai_config) = config.embeddings.openai_compatible {
+                    tracing::info!(
+                        "Embeddings provider: OpenAI-compatible ({}), model: {}",
+                        openai_config.base_url,
+                        openai_config.model
+                    );
+                    Some(Arc::new(OpenAiCompatibleEmbeddings::new(
+                        openai_config.clone(),
+                    )))
+                } else {
+                    tracing::warn!(
+                        "Embeddings provider set to 'openai_compatible' but config not available"
+                    );
+                    None
+                }
+            }
+            "openai" => {
+                // Explicit OpenAI provider with clear logging
                 if let Some(api_key) = config.embeddings.openai_api_key() {
                     tracing::info!(
-                        "Embeddings enabled via OpenAI (model: {})",
+                        "Embeddings provider: OpenAI (model: {})",
                         config.embeddings.model
                     );
                     Some(Arc::new(OpenAiEmbeddings::with_model(
                         api_key,
                         &config.embeddings.model,
                         match config.embeddings.model.as_str() {
+                            "nv-embed-v1" => 4096,
+                            "text-embedding-3-large" => 3072,
+                            _ => 1536, // text-embedding-3-small and ada-002
+                        },
+                    )))
+                } else {
+                    tracing::warn!(
+                        "Embeddings provider set to 'openai' but OPENAI_API_KEY not set"
+                    );
+                    None
+                }
+            }
+            other => {
+                // Unknown provider - try OpenAI as fallback
+                tracing::warn!(
+                    "Unknown EMBEDDING_PROVIDER '{}', falling back to OpenAI",
+                    other
+                );
+                if let Some(api_key) = config.embeddings.openai_api_key() {
+                    tracing::info!(
+                        "Embeddings provider: OpenAI (fallback, model: {})",
+                        config.embeddings.model
+                    );
+                    Some(Arc::new(OpenAiEmbeddings::with_model(
+                        api_key,
+                        &config.embeddings.model,
+                        match config.embeddings.model.as_str() {
+                            "nv-embed-v1" => 4096,
                             "text-embedding-3-large" => 3072,
                             _ => 1536, // text-embedding-3-small and ada-002
                         },

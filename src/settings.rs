@@ -103,27 +103,49 @@ pub enum KeySource {
 }
 
 /// Embeddings configuration.
+///
+/// Uses `openai_compatible` provider by default (llama.cpp with Ollama embeddings).
+/// Configure via environment variables:
+/// - `EMBEDDING_BASE_URL`: Server URL (default: http://localhost:8080)
+/// - `EMBEDDING_MODEL`: Model name (default: nomic-embed-text-v1)
+/// - `EMBEDDING_DIMENSIONS`: Embedding dimensions (default: 768)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingsSettings {
     /// Whether embeddings are enabled.
     #[serde(default)]
     pub enabled: bool,
 
-    /// Provider to use: "openai" or "nearai".
+    /// Provider to use: "openai", "nearai", or "openai_compatible".
     #[serde(default = "default_embeddings_provider")]
     pub provider: String,
+
+    /// Base URL for openai_compatible provider (e.g., http://localhost:8080).
+    #[serde(default = "default_embeddings_base_url")]
+    pub base_url: String,
 
     /// Model to use for embeddings.
     #[serde(default = "default_embeddings_model")]
     pub model: String,
+
+    /// Embedding dimensions (e.g., 768 for nomic-embed-text-v1).
+    #[serde(default = "default_embeddings_dimensions")]
+    pub dimensions: usize,
 }
 
 fn default_embeddings_provider() -> String {
-    "nearai".to_string()
+    "openai_compatible".to_string()
+}
+
+fn default_embeddings_base_url() -> String {
+    "http://localhost:8080".to_string()
 }
 
 fn default_embeddings_model() -> String {
-    "text-embedding-3-small".to_string()
+    "nomic-embed-text-v1".to_string()
+}
+
+fn default_embeddings_dimensions() -> usize {
+    768
 }
 
 impl Default for EmbeddingsSettings {
@@ -131,7 +153,9 @@ impl Default for EmbeddingsSettings {
         Self {
             enabled: false,
             provider: default_embeddings_provider(),
+            base_url: default_embeddings_base_url(),
             model: default_embeddings_model(),
+            dimensions: default_embeddings_dimensions(),
         }
     }
 }
@@ -881,8 +905,10 @@ mod tests {
     fn test_embeddings_defaults() {
         let settings = Settings::default();
         assert!(!settings.embeddings.enabled);
-        assert_eq!(settings.embeddings.provider, "nearai");
-        assert_eq!(settings.embeddings.model, "text-embedding-3-small");
+        assert_eq!(settings.embeddings.provider, "openai_compatible");
+        assert_eq!(settings.embeddings.base_url, "http://localhost:8080");
+        assert_eq!(settings.embeddings.model, "nomic-embed-text-v1");
+        assert_eq!(settings.embeddings.dimensions, 768);
     }
 
     #[test]

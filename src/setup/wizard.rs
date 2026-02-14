@@ -694,6 +694,7 @@ impl SetupWizard {
         let options = [
             "NEAR AI (uses same auth, no extra cost)",
             "OpenAI (requires API key)",
+            "OpenAI-compatible (llama.cpp, custom endpoints)",
         ];
 
         let choice = select_one("Select embeddings provider:", &options).map_err(SetupError::Io)?;
@@ -715,6 +716,21 @@ impl SetupWizard {
                 self.settings.embeddings.provider = "openai".to_string();
                 self.settings.embeddings.model = "text-embedding-3-small".to_string();
                 print_success("Embeddings configured for OpenAI");
+            }
+            2 => {
+                // OpenAI-compatible (llama.cpp, Ollama, custom endpoints)
+                print_info("Configure via environment variables:");
+                println!();
+                print_info("  EMBEDDING_BASE_URL  - Server URL (default: http://localhost:8080)");
+                print_info("  EMBEDDING_MODEL      - Model name (default: nomic-embed-text-v1)");
+                print_info("  EMBEDDING_DIMENSIONS - Dimensions (default: 768)");
+                println!();
+                self.settings.embeddings.enabled = true;
+                self.settings.embeddings.provider = "openai_compatible".to_string();
+                self.settings.embeddings.base_url = "http://localhost:8080".to_string();
+                self.settings.embeddings.model = "nomic-embed-text-v1".to_string();
+                self.settings.embeddings.dimensions = 768;
+                print_success("Embeddings configured for OpenAI-compatible endpoint");
             }
             _ => unreachable!(),
         }

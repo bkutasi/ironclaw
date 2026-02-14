@@ -327,6 +327,22 @@ pub struct OllamaConfig {
     pub model: String,
 }
 
+/// Configuration for OpenAI-compatible embeddings (e.g., llama.cpp, vLLM).
+///
+/// Defaults are set for llama.cpp running locally:
+/// - base_url: http://localhost:8080
+/// - model: nomic-embed-text-v1
+/// - dimensions: 768
+#[derive(Debug, Clone)]
+pub struct OpenAiCompatibleEmbeddingsConfig {
+    pub base_url: String,
+    pub api_key: Option<SecretString>,
+    pub model: String,
+    /// Embedding dimensions (required for some models like nomic-embed-text-v1).
+    /// If not set, the API will return vectors of its default size.
+    pub dimensions: Option<usize>,
+}
+
 /// Configuration for any OpenAI-compatible endpoint.
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatibleConfig {
@@ -542,12 +558,20 @@ impl LlmConfig {
 pub struct EmbeddingsConfig {
     /// Whether embeddings are enabled.
     pub enabled: bool,
-    /// Provider to use: "openai" or "nearai"
+    /// Provider to use: "openai", "nearai", "ollama", or "openai_compatible"
     pub provider: String,
     /// OpenAI API key (for OpenAI provider).
     pub openai_api_key: Option<SecretString>,
+    /// API key for custom providers (e.g., NVIDIA, Azure OpenAI).
+    /// Read from LLM_API_KEY or OPENAI_API_KEY.
+    pub api_key: Option<SecretString>,
+    /// Base URL for embeddings API (e.g., https://integrate.api.nvidia.com).
+    /// Defaults to NEAR AI base URL for nearai provider.
+    pub base_url: Option<String>,
     /// Model to use for embeddings.
     pub model: String,
+    /// OpenAI-compatible embeddings config (populated when provider=openai_compatible).
+    pub openai_compatible: Option<OpenAiCompatibleEmbeddingsConfig>,
 }
 
 impl Default for EmbeddingsConfig {
@@ -556,7 +580,10 @@ impl Default for EmbeddingsConfig {
             enabled: false,
             provider: "openai".to_string(),
             openai_api_key: None,
+            api_key: None,
+            base_url: None,
             model: "text-embedding-3-small".to_string(),
+            openai_compatible: None,
         }
     }
 }
@@ -564,12 +591,26 @@ impl Default for EmbeddingsConfig {
 impl EmbeddingsConfig {
     fn resolve(settings: &Settings) -> Result<Self, ConfigError> {
         let openai_api_key = optional_env("OPENAI_API_KEY")?.map(SecretString::from);
+        // Also check LLM_API_KEY for custom providers like NVIDIA
+        let api_key = optional_env("LLM_API_KEY")?.map(SecretString::from);
 
+        // Normalize provider name: accept nearai, near_ai, near, openai, open_ai
         let provider = optional_env("EMBEDDING_PROVIDER")?
-            .unwrap_or_else(|| settings.embeddings.provider.clone());
+            .unwrap_or_else(|| settings.embeddings.provider.clone())
+            .to_lowercase();
+
+        // Normalize provider names for backward compatibility
+        let provider = match provider.as_str() {
+            "near_ai" | "near" => "nearai".to_string(),
+            "open_ai" => "openai".to_string(),
+            other => other.to_string(),
+        };
 
         let model =
             optional_env("EMBEDDING_MODEL")?.unwrap_or_else(|| settings.embeddings.model.clone());
+
+        // Base URL for custom embeddings endpoints (e.g., NVIDIA, Azure)
+        let base_url = optional_env("EMBEDDING_BASE_URL")?;
 
         let enabled = optional_env("EMBEDDING_ENABLED")?
             .map(|s| s.parse())
@@ -578,19 +619,50 @@ impl EmbeddingsConfig {
                 key: "EMBEDDING_ENABLED".to_string(),
                 message: format!("must be 'true' or 'false': {e}"),
             })?
-            .unwrap_or_else(|| settings.embeddings.enabled || openai_api_key.is_some());
+            .unwrap_or_else(|| {
+                settings.embeddings.enabled || openai_api_key.is_some() || api_key.is_some()
+            });
+
+        // Resolve OpenAI-compatible embeddings config (e.g., llama.cpp)
+        let openai_compatible = if provider == "openai_compatible" {
+            // Use env var, then fall back to settings, then defaults
+            let base_url = optional_env("EMBEDDING_BASE_URL")?
+                .unwrap_or_else(|| settings.embeddings.base_url.clone());
+            let api_key = optional_env("LLM_API_KEY")?.map(SecretString::from);
+            let model = optional_env("EMBEDDING_MODEL")?
+                .unwrap_or_else(|| settings.embeddings.model.clone());
+            let dimensions = optional_env("EMBEDDING_DIMENSIONS")?
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(settings.embeddings.dimensions);
+            Some(OpenAiCompatibleEmbeddingsConfig {
+                base_url,
+                api_key,
+                model,
+                dimensions: Some(dimensions),
+            })
+        } else {
+            None
+        };
 
         Ok(Self {
             enabled,
             provider,
             openai_api_key,
+            api_key,
+            base_url,
             model,
+            openai_compatible,
         })
     }
 
     /// Get the OpenAI API key if configured.
     pub fn openai_api_key(&self) -> Option<&str> {
         self.openai_api_key.as_ref().map(|s| s.expose_secret())
+    }
+
+    /// Get the custom API key if configured.
+    pub fn api_key(&self) -> Option<&str> {
+        self.api_key.as_ref().map(|s| s.expose_secret())
     }
 }
 
