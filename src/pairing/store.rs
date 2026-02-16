@@ -320,7 +320,18 @@ impl PairingStore {
     fn record_failed_approve(&self, channel: &str) -> Result<(), PairingStoreError> {
         let path = approve_attempts_path(&self.base_dir, channel)?;
         fs::create_dir_all(path.parent().unwrap())?;
-        // Read existing content BEFORE opening with truncate (which clears the file)
+
+        // Lock FIRST, then read/write to avoid race conditions
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false) // Don't truncate - we want to preserve data while locked
+            .open(&path)?;
+
+        file.lock_exclusive()?;
+
+        // Now safe to read and process while holding the lock
         let content = fs::read_to_string(&path).unwrap_or_default();
         let mut data: ApproveAttemptsFile = serde_json::from_str(&content).unwrap_or_default();
         let now = now_secs();
@@ -329,14 +340,13 @@ impl PairingStore {
         data.failed_at.retain(|&t| t >= cutoff);
 
         let json = serde_json::to_string_pretty(&data)?;
-        // Now open with truncate and write
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&path)?;
-        file.lock_exclusive()?;
-        fs::write(&path, json)?;
+
+        // Write while holding the lock
+        file.set_len(0)?;
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(json.as_bytes())?;
+        file.sync_all()?;
+
         fs4::FileExt::unlock(&file)?;
         Ok(())
     }
