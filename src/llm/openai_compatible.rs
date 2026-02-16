@@ -371,6 +371,11 @@ impl LlmProvider for OpenAiCompatibleProvider {
             messages,
             temperature: req.temperature,
             max_tokens: req.max_tokens,
+            top_p: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
             tools: None,
             tool_choice: None,
         };
@@ -430,8 +435,13 @@ impl LlmProvider for OpenAiCompatibleProvider {
             messages,
             temperature: req.temperature,
             max_tokens: req.max_tokens,
+            top_p: req.top_p,
+            n: req.n,
+            presence_penalty: req.presence_penalty,
+            frequency_penalty: req.frequency_penalty,
+            seed: req.seed,
             tools: if tools.is_empty() { None } else { Some(tools) },
-            tool_choice: req.tool_choice,
+            tool_choice: req.tool_choice.map(serde_json::Value::String),
         };
 
         let response: ChatCompletionResponse = self.send_request_with_retry(&request).await?;
@@ -518,19 +528,38 @@ impl LlmProvider for OpenAiCompatibleProvider {
     }
 
     fn active_model_name(&self) -> String {
-        // Recover from poisoned locks to avoid panics - the data is still valid
         self.active_model
             .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    "Poisoned read lock detected in OpenAiCompatibleProvider, recovering. \
+                     This may indicate a previous panic in the provider: {}",
+                    e
+                );
+                e.into_inner()
+            })
             .clone()
     }
 
     fn set_model(&self, model: &str) -> Result<(), crate::error::LlmError> {
-        // Recover from poisoned locks to avoid panics - the data is still valid
-        let mut guard = self.active_model.write().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.active_model.write().unwrap_or_else(|e| {
+            tracing::warn!(
+                "Poisoned write lock detected in OpenAiCompatibleProvider, recovering. \
+                 This may indicate a previous panic in the provider: {}",
+                e
+            );
+            e.into_inner()
+        });
         *guard = model.to_string();
         // Invalidate model cache when model changes
-        let mut cache_guard = self.models_cache.write().unwrap_or_else(|e| e.into_inner());
+        let mut cache_guard = self.models_cache.write().unwrap_or_else(|e| {
+            tracing::warn!(
+                "Poisoned write lock detected in models_cache, recovering. \
+                 This may indicate a previous panic in the provider: {}",
+                e
+            );
+            e.into_inner()
+        });
         *cache_guard = None;
         Ok(())
     }
@@ -547,9 +576,19 @@ struct ChatCompletionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    n: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presence_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frequency_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<ChatCompletionTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tool_choice: Option<String>,
+    tool_choice: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -743,6 +782,328 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&calls[0].function.arguments).expect("valid JSON string");
         assert_eq!(parsed["key"], "value");
+    }
+
+    // Tests for tool_choice serialization
+
+    #[test]
+    fn test_tool_choice_string_auto_serializes_correctly() {
+        let req = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
+            tools: None,
+            tool_choice: Some(serde_json::Value::String("auto".to_string())),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""tool_choice":"auto""#));
+    }
+
+    #[test]
+    fn test_tool_choice_string_required_serializes_correctly() {
+        let req = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
+            tools: None,
+            tool_choice: Some(serde_json::Value::String("required".to_string())),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""tool_choice":"required""#));
+    }
+
+    #[test]
+    fn test_tool_choice_string_none_serializes_correctly() {
+        let req = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
+            tools: None,
+            tool_choice: Some(serde_json::Value::String("none".to_string())),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""tool_choice":"none""#));
+    }
+
+    #[test]
+    fn test_tool_choice_object_serializes_correctly() {
+        let tool_choice_obj = serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "my_function"
+            }
+        });
+        let req = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
+            tools: None,
+            tool_choice: Some(tool_choice_obj),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        // Check that tool_choice contains the expected fields (whitespace may vary)
+        assert!(json.contains("\"tool_choice\""));
+        assert!(json.contains("\"type\":\"function\""));
+        assert!(json.contains("\"name\":\"my_function\""));
+    }
+
+    #[test]
+    fn test_tool_choice_none_is_omitted_from_serialization() {
+        let req = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
+            tools: None,
+            tool_choice: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(!json.contains("tool_choice"));
+    }
+
+    // Tests for new parameters serialization (top_p, n, presence_penalty, frequency_penalty, seed)
+
+    #[test]
+    fn test_top_p_serializes_correctly() {
+        let req = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: Some(0.9),
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
+            tools: None,
+            tool_choice: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""top_p":0.9"#));
+    }
+
+    #[test]
+    fn test_top_p_none_is_omitted_from_serialization() {
+        let req = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
+            tools: None,
+            tool_choice: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(!json.contains("top_p"));
+    }
+
+    #[test]
+    fn test_n_serializes_correctly() {
+        let req = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            n: Some(3),
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
+            tools: None,
+            tool_choice: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""n":3"#));
+    }
+
+    #[test]
+    fn test_n_none_is_omitted_from_serialization() {
+        let req = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
+            tools: None,
+            tool_choice: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(!json.contains("n"));
+    }
+
+    #[test]
+    fn test_presence_penalty_serializes_correctly() {
+        let req = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            n: None,
+            presence_penalty: Some(0.5),
+            frequency_penalty: None,
+            seed: None,
+            tools: None,
+            tool_choice: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""presence_penalty":0.5"#));
+    }
+
+    #[test]
+    fn test_presence_penalty_none_is_omitted_from_serialization() {
+        let req = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
+            tools: None,
+            tool_choice: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(!json.contains("presence_penalty"));
+    }
+
+    #[test]
+    fn test_frequency_penalty_serializes_correctly() {
+        let req = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: Some(1.0),
+            seed: None,
+            tools: None,
+            tool_choice: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""frequency_penalty":1.0"#));
+    }
+
+    #[test]
+    fn test_frequency_penalty_none_is_omitted_from_serialization() {
+        let req = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
+            tools: None,
+            tool_choice: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(!json.contains("frequency_penalty"));
+    }
+
+    #[test]
+    fn test_seed_serializes_correctly() {
+        let req = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: Some(42),
+            tools: None,
+            tool_choice: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""seed":42"#));
+    }
+
+    #[test]
+    fn test_seed_none_is_omitted_from_serialization() {
+        let req = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
+            tools: None,
+            tool_choice: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(!json.contains("seed"));
+    }
+
+    #[test]
+    fn test_all_new_parameters_serialized_together() {
+        // Test that all new parameters serialize correctly when provided together
+        let req = ChatCompletionRequest {
+            model: "gpt-4".to_string(),
+            messages: vec![],
+            temperature: Some(0.7),
+            max_tokens: Some(100),
+            top_p: Some(0.9),
+            n: Some(2),
+            presence_penalty: Some(0.5),
+            frequency_penalty: Some(0.5),
+            seed: Some(12345),
+            tools: None,
+            tool_choice: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""top_p":0.9"#));
+        assert!(json.contains(r#""n":2"#));
+        assert!(json.contains(r#""presence_penalty":0.5"#));
+        assert!(json.contains(r#""frequency_penalty":0.5"#));
+        assert!(json.contains(r#""seed":12345"#));
     }
 
     // Tests for api_url() URL construction
@@ -967,6 +1328,11 @@ mod tests {
             }],
             temperature: None,
             max_tokens: None,
+            top_p: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
             tools: None,
             tool_choice: None,
         };
@@ -1032,6 +1398,11 @@ mod tests {
             }],
             temperature: None,
             max_tokens: None,
+            top_p: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
             tools: None,
             tool_choice: None,
         };
@@ -1105,6 +1476,11 @@ mod tests {
             }],
             temperature: None,
             max_tokens: None,
+            top_p: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
             tools: None,
             tool_choice: None,
         };
@@ -1184,6 +1560,11 @@ mod tests {
             }],
             temperature: None,
             max_tokens: None,
+            top_p: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
             tools: None,
             tool_choice: None,
         };
@@ -1245,6 +1626,11 @@ mod tests {
             }],
             temperature: None,
             max_tokens: None,
+            top_p: None,
+            n: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
             tools: None,
             tool_choice: None,
         };
