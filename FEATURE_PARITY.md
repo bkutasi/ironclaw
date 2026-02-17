@@ -112,7 +112,7 @@ This document tracks feature parity between IronClaw (Rust implementation) and O
 | `pairing` | ✅ | ✅ | - | list/approve for channel DM pairing |
 | `nodes` | ✅ | ❌ | P3 | Device management |
 | `plugins` | ✅ | ❌ | P3 | Plugin management |
-| `hooks` | ✅ | ❌ | P2 | Lifecycle hooks |
+| `hooks` | ✅ | ✅ | P2 | Lifecycle hooks |
 | `cron` | ✅ | ❌ | P2 | Scheduled jobs |
 | `webhooks` | ✅ | ❌ | P3 | Webhook config |
 | `message send` | ✅ | ❌ | P2 | Send to channels |
@@ -133,7 +133,7 @@ This document tracks feature parity between IronClaw (Rust implementation) and O
 |---------|----------|----------|-------|
 | Pi agent runtime | ✅ | ➖ | IronClaw uses custom runtime |
 | RPC-based execution | ✅ | ✅ | Orchestrator/worker pattern |
-| Multi-provider failover | ✅ | ❌ | Provider fallback chains |
+| Multi-provider failover | ✅ | ✅ | `FailoverProvider` tries providers sequentially on retryable errors |
 | Per-sender sessions | ✅ | ✅ | |
 | Global sessions | ✅ | ❌ | Optional shared context |
 | Session pruning | ✅ | ❌ | Auto cleanup old sessions |
@@ -164,7 +164,7 @@ This document tracks feature parity between IronClaw (Rust implementation) and O
 | AWS Bedrock | ✅ | ❌ | P3 | |
 | Google Gemini | ✅ | ❌ | P3 | |
 | OpenRouter | ✅ | ❌ | P3 | |
-| Ollama (local) | ✅ | ❌ | P2 | Local models |
+| Ollama (local) | ✅ | ✅ | - | via `rig::providers::ollama` (full support) |
 | node-llama-cpp | ✅ | ➖ | - | N/A for Rust |
 | llama.cpp (native) | ❌ | 🔮 | P3 | Rust bindings |
 
@@ -173,8 +173,8 @@ This document tracks feature parity between IronClaw (Rust implementation) and O
 | Feature | OpenClaw | IronClaw | Notes |
 |---------|----------|----------|-------|
 | Auto-discovery | ✅ | ❌ | |
-| Failover chains | ✅ | ❌ | Provider fallback |
-| Cooldown management | ✅ | ❌ | Skip failed providers |
+| Failover chains | ✅ | ✅ | `FailoverProvider` with configurable `fallback_model` |
+| Cooldown management | ✅ | ✅ | Lock-free per-provider cooldown in `FailoverProvider` |
 | Per-session model override | ✅ | ✅ | Model selector in TUI |
 | Model selection UI | ✅ | ✅ | TUI keyboard shortcut |
 
@@ -323,14 +323,14 @@ This document tracks feature parity between IronClaw (Rust implementation) and O
 | Cron jobs | ✅ | ✅ | - | Routines with cron trigger |
 | Timezone support | ✅ | ✅ | - | Via cron expressions |
 | One-shot/recurring jobs | ✅ | ✅ | - | Manual + cron triggers |
-| `beforeInbound` hook | ✅ | ❌ | P2 | |
-| `beforeOutbound` hook | ✅ | ❌ | P2 | |
-| `beforeToolCall` hook | ✅ | ❌ | P2 | |
+| `beforeInbound` hook | ✅ | ✅ | P2 | |
+| `beforeOutbound` hook | ✅ | ✅ | P2 | |
+| `beforeToolCall` hook | ✅ | ✅ | P2 | |
 | `onMessage` hook | ✅ | ✅ | - | Routines with event trigger |
-| `onSessionStart` hook | ✅ | ❌ | P2 | |
-| `onSessionEnd` hook | ✅ | ❌ | P2 | |
+| `onSessionStart` hook | ✅ | ✅ | P2 | |
+| `onSessionEnd` hook | ✅ | ✅ | P2 | |
 | `transcribeAudio` hook | ✅ | ❌ | P3 | |
-| `transformResponse` hook | ✅ | ❌ | P2 | |
+| `transformResponse` hook | ✅ | ✅ | P2 | |
 | Bundled hooks | ✅ | ❌ | P2 | |
 | Plugin hooks | ✅ | ❌ | P3 | |
 | Workspace hooks | ✅ | ❌ | P2 | Inline code |
@@ -419,15 +419,11 @@ This document tracks feature parity between IronClaw (Rust implementation) and O
 - ❌ Slack channel (real implementation)
 - ✅ Telegram channel (WASM, DM pairing, caption, /start)
 - ❌ WhatsApp channel
-- ❌ Multi-provider failover
-- ❌ Hooks system (beforeInbound, beforeToolCall, etc.)
+- ✅ Multi-provider failover (`FailoverProvider` with retryable error classification)
+- ✅ Hooks system (beforeInbound, beforeToolCall, beforeOutbound, onSessionStart, onSessionEnd, transformResponse)
 
 ### P2 - Medium Priority
-- ❌ Cron job scheduling
-- ❌ Web Control UI
-- ❌ WebChat channel
-- 🚧 Media handling (caption support; no image/PDF processing)
-- ❌ CLI subcommands (config, status, memory, doctor)
+- ❌ Media handling (images, PDFs)
 - ❌ Ollama/local model support
 - ❌ Configuration hot-reload
 - ❌ Webhook trigger endpoint in web gateway
