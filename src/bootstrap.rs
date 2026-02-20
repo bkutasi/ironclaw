@@ -98,7 +98,10 @@ pub fn save_bootstrap_env(vars: &[(&str, &str)]) -> std::io::Result<()> {
     }
     let mut content = String::new();
     for (key, value) in vars {
-        content.push_str(&format!("{}=\"{}\"\n", key, value));
+        // Escape backslashes and double quotes to prevent env var injection
+        // (e.g. a value containing `"\nINJECTED="x` would break out of quotes).
+        let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+        content.push_str(&format!("{}=\"{}\"\n", key, escaped));
     }
     std::fs::write(&path, content)
 }
@@ -324,6 +327,34 @@ mod tests {
     }
 
     #[test]
+    fn test_save_bootstrap_env_escapes_quotes() {
+        let dir = tempdir().unwrap();
+        let env_path = dir.path().join(".env");
+
+        // A malicious URL attempting to inject a second env var
+        let malicious = r#"http://evil.com"
+INJECTED="pwned"#;
+        let mut content = String::new();
+        let escaped = malicious.replace('\\', "\\\\").replace('"', "\\\"");
+        content.push_str(&format!("LLM_BASE_URL=\"{}\"\n", escaped));
+        std::fs::write(&env_path, &content).unwrap();
+
+        let parsed: Vec<(String, String)> = dotenvy::from_path_iter(&env_path)
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Must parse as exactly one variable, not two
+        assert_eq!(parsed.len(), 1, "injection must not create extra vars");
+        assert_eq!(parsed[0].0, "LLM_BASE_URL");
+        // The value should contain the original malicious content (unescaped by dotenvy)
+        assert!(
+            parsed[0].1.contains("INJECTED"),
+            "value should contain the literal injection attempt, not execute it"
+        );
+    }
+
+    #[test]
     fn test_ironclaw_env_path() {
         let path = ironclaw_env_path();
         assert!(path.ends_with(".ironclaw/.env"));
@@ -460,5 +491,33 @@ mod tests {
         // Old DATABASE_URL should be gone
         assert_eq!(parsed.len(), 2);
         assert!(parsed.iter().all(|(k, _)| k != "DATABASE_URL"));
+    }
+
+    #[test]
+    fn test_onboard_completed_round_trips_through_env() {
+        let dir = tempdir().unwrap();
+        let env_path = dir.path().join(".env");
+
+        // Simulate what the wizard writes: bootstrap vars + ONBOARD_COMPLETED
+        let vars = [
+            ("DATABASE_BACKEND", "libsql"),
+            ("ONBOARD_COMPLETED", "true"),
+        ];
+        let mut content = String::new();
+        for (key, value) in &vars {
+            let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+            content.push_str(&format!("{}=\"{}\"\n", key, escaped));
+        }
+        std::fs::write(&env_path, &content).unwrap();
+
+        // Verify dotenvy parses ONBOARD_COMPLETED correctly
+        let parsed: Vec<(String, String)> = dotenvy::from_path_iter(&env_path)
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(parsed.len(), 2);
+        let onboard = parsed.iter().find(|(k, _)| k == "ONBOARD_COMPLETED");
+        assert!(onboard.is_some(), "ONBOARD_COMPLETED must be present");
+        assert_eq!(onboard.unwrap().1, "true");
     }
 }

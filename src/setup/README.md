@@ -19,8 +19,9 @@ Explicit invocation. Loads `.env` files, runs the wizard, exits.
 ironclaw          (first run, no database configured)
 ```
 
-Auto-detection via `check_onboard_needed()` in `main.rs`. Triggers when
-none of these are true:
+Auto-detection via `check_onboard_needed()` in `main.rs`. Skips onboarding
+when `ONBOARD_COMPLETED` env var is set (written to `~/.ironclaw/.env` by
+the wizard). Otherwise triggers when no database is configured:
 - `DATABASE_URL` env var is set
 - `LIBSQL_PATH` env var is set
 - `~/.ironclaw/ironclaw.db` exists on disk
@@ -299,16 +300,26 @@ Contains only the settings needed BEFORE database connection. Written by
 ```env
 DATABASE_BACKEND="libsql"
 LIBSQL_PATH="/Users/name/.ironclaw/ironclaw.db"
+LLM_BACKEND="openai_compatible"
+LLM_BASE_URL="http://my-vllm:8000/v1"
 ```
 
-Or for PostgreSQL:
+Or for PostgreSQL + NEAR AI:
 ```env
 DATABASE_BACKEND="postgres"
 DATABASE_URL="postgres://user:pass@localhost/ironclaw"
+LLM_BACKEND="nearai"
+```
+
+Or for Ollama:
+```env
+LLM_BACKEND="ollama"
+OLLAMA_BASE_URL="http://localhost:11434"
 ```
 
 **Why separate?** Chicken-and-egg: you need `DATABASE_BACKEND` to know
-which database to connect to, so it can't be stored in the database.
+which database to connect to, and `LLM_BACKEND` to know whether to
+attempt NEAR AI session auth -- neither can be stored in the database.
 
 **Layer 2: Database settings table** (everything else)
 
@@ -335,10 +346,14 @@ Final step of the wizard:
 1. Mark onboard_completed = true
 2. Write ALL settings to database (try postgres pool, then libSQL backend)
 3. Write bootstrap vars to ~/.ironclaw/.env:
-   - DATABASE_BACKEND (always)
-   - DATABASE_URL     (if postgres)
-   - LIBSQL_PATH      (if libsql)
-   - LIBSQL_URL       (if turso sync)
+   - DATABASE_BACKEND   (always)
+   - DATABASE_URL       (if postgres)
+   - LIBSQL_PATH        (if libsql)
+   - LIBSQL_URL         (if turso sync)
+   - LLM_BACKEND        (always, when set)
+   - LLM_BASE_URL       (if openai_compatible)
+   - OLLAMA_BASE_URL    (if ollama)
+   - ONBOARD_COMPLETED  (always, "true")
 4. Print configuration summary
 ```
 
