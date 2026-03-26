@@ -1,0 +1,294 @@
+# Telegram Integration: Polling vs Webhook Mode
+**Date**: 2026-03-17  
+**Status**: Polling mode confirmed working ✅
+---
+## 🎯 Quick Answer: Can You Use Polling Mode Always?
+
+**Yes, you can use polling mode permanently** - it's reliable and works well for personal/small-scale bots.
+
+**Trade-offs:**
+
+| Aspect | Polling Mode | Webhook Mode |
+|--------|--------------|--------------|
+| **Reliability** | ✅ Excellent (outbound connection) | ⚠️ Depends on tunnel/firewall |
+| **Message Delay** | ⚠️ 30 seconds | ✅ Instant |
+| **Setup Complexity** | ✅ Simple (just token) | ⚠️ Requires tunnel + Cloudflare config |
+| **API Rate Limits** | ⚠️ More calls (every 30s) | ✅ Fewer calls (only on messages) |
+| **Cloudflare Issues** | ✅ None (outbound) | ❌ Can be blocked by WAF/Bot Fight Mode |
+| **Production Ready** | ✅ Yes (Telegram supports it) | ✅ Yes (recommended for large bots) |
+
+**Recommendation for IronClaw:**
+- **Personal use / Development**: Polling mode is perfect ✅
+- **Production / High traffic**: Webhook mode (after fixing Cloudflare rules)
+
+---
+## 📊 What We Learned (Debug Session Summary)
+
+### Problem
+Telegram messages not reaching IronClaw agent.
+
+### Root Cause Analysis
+
+#### Issue 1: Cloudflare Tunnel Misconfiguration ✅ FIXED
+- **Symptom**: 502 Bad Gateway
+- **Cause**: Tunnel config missing ingress rules
+- **Fix**: Created proper config at `~/.cloudflared/ironclaw-config.yml`
+
+#### Issue 2: Cloudflare Security Blocking Telegram ✅ IDENTIFIED
+- **Symptom**: Telegram reports `403 Forbidden` but manual curl tests return 200 OK
+- **Cause**: Bot Fight Mode / WAF blocking Telegram's IPs
+- **Proof**: Ephemeral tunnel (no security rules) worked fine, got 429 from Telegram instead of 403
+
+#### Issue 3: Telegram Rate Limiting ✅ WORKAROUND
+- **Symptom**: `429 Too Many Requests` during webhook registration
+- **Cause**: Too many failed webhook attempts
+- **Fix**: Switched to polling mode
+
+### Final Solution: Polling Mode ✅
+```bash
+# Delete webhook
+curl -X POST https://api.telegram.org/bot<TOKEN>/deleteWebhook
+
+# Enable polling in IronClaw
+export TELEGRAM_POLLING_ENABLED=true
+./target/release/ironclaw
+```
+
+---
+## 🔧 How Polling Mode Works
+
+### Architecture
+```
+┌─────────────┐                              ┌──────────────┐
+│   Telegram  │                              │   IronClaw   │
+│    Servers  │                              │    Agent     │
+└──────┬──────┘                              └──────┬───────┘
+       │                                            │
+       │  1. Every 30 seconds                       │
+       │  2. GET /getUpdates                        │
+       │  3. Returns pending messages               │
+       │◄───────────────────────────────────────────│
+       │                                            │
+       │  4. Send response                          │
+       │───────────────────────────────────────────►│
+       │                                            │
+```
+
+### Configuration
+```bash
+# Environment variables
+export TELEGRAM_POLLING_ENABLED=true
+export TELEGRAM_POLL_INTERVAL_MS=30000  # 30 seconds
+export TELEGRAM_BOT_TOKEN=your_token
+
+# Start IronClaw
+./target/release/ironclaw
+```
+
+### Logs (What to Expect)
+```
+INFO Polling mode enabled (no tunnel configured) channel=telegram
+DEBUG Polling tick - calling on_poll channel=telegram
+INFO WASM http_request called method=GET original_url=https://api.telegram.org/bot.../getUpdates?offset=0&timeout=25
+INFO HTTP response received status=200 body_len=2937
+INFO Message emitted to host state successfully
+INFO Message successfully sent to agent queue channel=telegram
+```
+
+---
+## 📋 Starting IronClaw
+
+### Polling Mode (Recommended)
+
+```bash
+# Set environment variables (or add to ~/.ironclaw/.env)
+export LLM_BACKEND=openai_compatible
+export LLM_BASE_URL=https://integrate.api.nvidia.com/v1
+export LLM_API_KEY=$NGC_KEY
+export LLM_MODEL=z-ai/glm5
+export GATEWAY_PORT=3004
+export TELEGRAM_BOT_TOKEN=7577428997:AAFpUZ1V9CZo9xfra49WyJarkpvv0fi6aIg
+export HTTP_PORT=8081
+export TELEGRAM_POLLING_ENABLED=true
+export TELEGRAM_POLL_INTERVAL_MS=30000
+
+# Delete webhook (switch to polling)
+curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/deleteWebhook"
+
+# Start IronClaw
+./target/release/ironclaw
+```
+
+**Usage:**
+```bash
+export NGC_KEY="your-key"
+./target/release/ironclaw
+```
+
+### Webhook Mode (If You Fix Cloudflare)
+**File**: `.tmp/start-ironclaw.sh`
+
+```bash
+export LLM_BACKEND=openai_compatible
+export LLM_BASE_URL=https://integrate.api.nvidia.com/v1
+export LLM_API_KEY=$NGC_KEY
+export LLM_MODEL=z-ai/glm5
+export GATEWAY_PORT=3004
+export TELEGRAM_BOT_TOKEN=7577428997:AAFpUZ1V9CZo9xfra49WyJarkpvv0fi6aIg
+export TUNNEL_URL=https://ironclaw.kutasi.dev
+export HTTP_PORT=8081
+
+# Start tunnel
+cloudflared tunnel --config ~/.cloudflared/ironclaw-config.yml run &
+
+# Start IronClaw
+./target/release/ironclaw
+```
+
+**Prerequisites:**
+- Cloudflare tunnel configured
+- Bot Fight Mode exception for `/webhook/telegram`
+- Webhook registered with Telegram
+
+---
+## 🔍 Monitoring Polling Mode
+
+### Check if Messages Are Being Received
+```bash
+# Watch polling activity
+tail -f /tmp/ironclaw.log | grep -E "(on_poll|getUpdates|emitted)"
+
+# Expected output (every 30 seconds):
+# DEBUG Polling tick - calling on_poll channel=telegram
+# INFO WASM http_request called method=GET .../getUpdates?offset=...
+# INFO HTTP response received status=200
+# INFO Message emitted to host state successfully
+```
+
+### Check Last Update ID
+```bash
+# See what offset IronClaw is polling from
+grep "last_update_id" /tmp/ironclaw.log | tail -1
+```
+
+### Check Telegram's View
+```bash
+# Check webhook status (should show no webhook)
+curl -s "https://api.telegram.org/bot7577428997:AAFpUZ1V9CZo9xfra49WyJarkpvv0fi6aIg/getWebhookInfo" | jq .
+
+# Expected:
+# {
+#   "url": "",  ← No webhook set (good for polling)
+#   "pending_update_count": 0  ← No pending messages
+# }
+```
+
+---
+## ⚠️ Polling Mode Limitations
+
+### 1. Message Delay (30 seconds)
+- Messages arrive within 30 seconds, not instantly
+- **Impact**: Fine for personal use, noticeable for real-time chat
+
+### 2. API Rate Limits
+- One API call every 30 seconds = 2,880 calls/day
+- Telegram limit: Much higher (no documented strict limit for getUpdates)
+- **Impact**: Not a concern for personal/single-user bots
+
+### 3. Battery/Resource Usage
+- Continuous polling uses more resources than webhook (idle until message)
+- **Impact**: Negligible on server, matters on battery-powered devices
+
+---
+## 🔄 Switching Between Modes
+
+### Webhook → Polling
+```bash
+# 1. Delete webhook
+curl -s -X POST "https://api.telegram.org/bot<TOKEN>/deleteWebhook"
+
+# 2. Set TELEGRAM_POLLING_ENABLED=true
+
+# 3. Restart IronClaw
+pkill ironclaw
+./target/release/ironclaw
+```
+
+### Polling → Webhook
+```bash
+# 1. Stop IronClaw
+pkill ironclaw
+
+# 2. Set TELEGRAM_POLLING_ENABLED=false (or unset)
+
+# 3. Ensure tunnel is running
+cloudflared tunnel --config ~/.cloudflared/ironclaw-config.yml run &
+
+# 4. Register webhook
+curl -s -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://ironclaw.kutasi.dev/webhook/telegram","allowed_updates":["message","edited_message"]}'
+
+# 5. Start IronClaw
+./target/release/ironclaw
+```
+
+---
+## 📊 Decision Matrix
+
+| Use Case | Recommended Mode | Why |
+|----------|------------------|-----|
+| **Personal assistant** | ✅ Polling | Simple, reliable, delay doesn't matter |
+| **Development/Testing** | ✅ Polling | No tunnel setup needed |
+| **Multi-user bot** | ⚠️ Webhook | Better scalability |
+| **Real-time chat** | ⚠️ Webhook | Instant delivery |
+| **High traffic (>100 msg/day)** | ⚠️ Webhook | Fewer API calls |
+| **Behind strict firewall** | ✅ Polling | Outbound only, no inbound rules |
+| **Cloudflare with Bot Fight Mode** | ✅ Polling | Avoids WAF blocking issues |
+
+---
+## 🎯 Current IronClaw Configuration
+
+**Current Mode**: Polling ✅
+
+**Configuration:**
+```bash
+TELEGRAM_POLLING_ENABLED=true
+TELEGRAM_POLL_INTERVAL_MS=30000
+```
+
+**Status:**
+- ✅ Messages being received every 30 seconds
+- ✅ No Cloudflare blocking issues
+- ✅ No webhook registration needed
+- ✅ All 9 pending messages delivered
+
+**Start command:**
+```bash
+./target/release/ironclaw
+```
+
+---
+## 📚 References
+
+- **Telegram Bot API - getUpdates**: https://core.telegram.org/bots/api#getupdates
+- **Telegram Bot API - setWebhook**: https://core.telegram.org/bots/api#setwebhook
+- **IronClaw Telegram Channel**: `channels-src/telegram/src/lib.rs`
+- **IronClaw Setup Docs**: `docs/TELEGRAM_SETUP.md`
+
+---
+## ✅ Conclusion
+
+**Yes, you can use polling mode permanently for IronClaw.** It's:
+- ✅ Reliable
+- ✅ Simple to maintain
+- ✅ Not affected by Cloudflare security rules
+- ✅ Fully supported by Telegram
+- ✅ Perfect for personal assistant use cases
+
+**Only switch to webhook if:**
+- You need instant message delivery
+- You're running a multi-user bot
+- You have high message volume
+
+**Current setup is production-ready as-is.** 🚀

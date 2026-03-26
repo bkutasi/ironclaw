@@ -1,0 +1,35 @@
+{
+  "name": "config-validator-tool",
+  "description": "Validate IronClaw configuration and catch common issues",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "config_validator",
+      "description": "Check environment variables, LLM model, database URL format, and file permissions. Returns detailed validation results.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "check": {
+            "type": "string",
+            "description": "Which check to run: 'env' for environment variables only, 'full_report' for complete report",
+            "enum": ["env", "full_report"]
+          }
+        },
+        "required": ["check"],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "string",
+        "description": "JSON array of check results or formatted text report"
+      }
+    }
+  ],
+  "trust_level": "trusted",
+  "permissions": [
+    "read_env_file",
+    "read_home_directory"
+  ],
+  "credential_config": {
+    "description": "No credentials required - reads from ~/.ironclaw/.env"
+  }
+}

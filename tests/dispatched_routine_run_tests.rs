@@ -356,4 +356,76 @@ mod tests {
         );
         assert_eq!(dispatched_after[0].job_id, Some(job.job_id));
     }
+
+    // -----------------------------------------------------------------------
+    // Test 7: Database error when fetching job finalizes run as failed
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn dispatched_run_db_error_finalizes_as_failed() {
+        let (db, _tmp) = create_test_db().await;
+        let routine_id = Uuid::new_v4();
+        let routine = make_routine(routine_id);
+        db.create_routine(&routine).await.expect("create routine");
+
+        // Create and save a job
+        let job = JobContext::new("Test job", "Test description");
+        db.save_job(&job).await.expect("save job");
+
+        // Create a dispatched run linked to that job
+        let run = make_run(routine_id, Some(job.job_id));
+        db.create_routine_run(&run).await.expect("create run");
+
+        // Verify the run is listed as dispatched
+        let dispatched = db
+            .list_dispatched_routine_runs()
+            .await
+            .expect("list dispatched");
+        assert_eq!(dispatched.len(), 1);
+
+        // Simulate error path: complete the run as failed with error message
+        // This simulates what sync_dispatched_runs() does when get_job() returns Err
+        let error_msg = "Database connection lost";
+        db.complete_routine_run(
+            run.id,
+            RunStatus::Failed,
+            Some(&format!("Failed to fetch linked job: {error_msg}")),
+            None,
+        )
+        .await
+        .expect("complete run as failed");
+
+        // Run should no longer appear in dispatched list (properly finalized)
+        let dispatched_after = db
+            .list_dispatched_routine_runs()
+            .await
+            .expect("list dispatched after");
+        assert!(
+            dispatched_after.is_empty(),
+            "Run with DB error should be finalized to prevent infinite loop"
+        );
+
+        // Verify the run status in DB
+        let all_runs = db
+            .list_routine_runs(routine_id, 100)
+            .await
+            .expect("list routine runs");
+        let finalized_run = all_runs
+            .iter()
+            .find(|r| r.id == run.id)
+            .expect("run should exist");
+        assert_eq!(
+            finalized_run.status,
+            RunStatus::Failed,
+            "Run should be marked as failed"
+        );
+        assert!(
+            finalized_run.result_summary.is_some(),
+            "Run should have error summary"
+        );
+        assert!(
+            finalized_run.completed_at.is_some(),
+            "Run should have completion timestamp"
+        );
+    }
 }

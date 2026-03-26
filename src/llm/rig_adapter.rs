@@ -662,6 +662,7 @@ where
 
         let mut messages = request.messages;
         crate::llm::provider::sanitize_tool_messages(&mut messages);
+        crate::llm::provider::ensure_last_message_role(&mut messages, Some(&self.model_name));
         let (preamble, history) = convert_messages(&messages);
 
         let mut rig_req = build_rig_request(
@@ -722,6 +723,7 @@ where
 
         let mut messages = request.messages;
         crate::llm::provider::sanitize_tool_messages(&mut messages);
+        crate::llm::provider::ensure_last_message_role(&mut messages, Some(&self.model_name));
         let (preamble, history) = convert_messages(&messages);
         let tools = convert_tools(&request.tools);
         let tool_choice = convert_tool_choice(request.tool_choice.as_deref());

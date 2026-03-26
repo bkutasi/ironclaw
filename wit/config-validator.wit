@@ -1,0 +1,65 @@
+package near:config-validator@0.1.0;
+
+/// Configuration Validator Skill Interface
+///
+/// Provides tools for validating IronClaw configuration and catching
+/// common issues before they cause runtime failures.
+interface config-validator {
+    /// Check environment variables and .env file for common issues.
+    ///
+    /// Validates:
+    /// - .env file exists at ~/.ironclaw/.env
+    /// - NGC_KEY format (must start with "nvapi-")
+    /// - LLM_MODEL validity (not in invalid models list)
+    /// - DATABASE_URL format and password
+    /// - TELEGRAM_BOT_TOKEN format (if present)
+    /// - TUNNEL_URL is HTTPS (if present)
+    ///
+    /// Returns JSON array of check results with status, name, message, and fix_suggestion.
+    config-check-env: func() -> string;
+
+    /// Test database connection and try common alternatives.
+    ///
+    /// Attempts connection with configured DATABASE_URL, then tries:
+    /// - Port 5432 vs 5433
+    /// - Password "yourpass" vs "ironclaw_pass"
+    ///
+    /// Returns JSON array of connection test results.
+    config-check-database: func() -> string;
+
+    /// Validate LLM model configuration and test API endpoint.
+    ///
+    /// Checks:
+    /// - Model name against known valid models
+    /// - Tests actual NVIDIA NIM API endpoint
+    /// - Reports response codes (200 OK, 401 Unauthorized, 404 Not Found)
+    ///
+    /// Returns JSON array of API test results.
+    config-check-llm: func() -> string;
+
+    /// Generate complete configuration health report.
+    ///
+    /// Runs all checks and returns a formatted text report with:
+    /// - Status of each configuration item
+    /// - Issues found with suggestions
+    /// - Summary of problems
+    ///
+    /// Returns formatted text report.
+    config-full-report: func() -> string;
+
+    /// Auto-fix common configuration issues.
+    ///
+    /// Automatically fixes:
+    /// - Invalid LLM_MODEL → z-ai/glm5
+    /// - Wrong DATABASE_URL password → yourpass
+    ///
+    /// Creates backup at ~/.ironclaw/.env.backup before making changes.
+    ///
+    /// Returns text report of fixes applied.
+    config-fix-all: func() -> string;
+}
+
+/// World definition for the configuration validator skill.
+world config-validator-world {
+    export config-validator;
+}

@@ -23,6 +23,7 @@ use crate::agent::routine::{
     normalize_cron_expression,
 };
 use crate::agent::routine_engine::RoutineEngine;
+use crate::config::helpers::optional_env;
 use crate::context::JobContext;
 use crate::db::Database;
 use crate::tools::tool::{
@@ -895,10 +896,18 @@ fn parse_routine_execution(
     })
 }
 
+/// Parse routine delivery configuration with default fallback.
+/// Configuration precedence: params > env HEARTBEAT_NOTIFY_USER > None
 fn parse_routine_delivery(params: &Value) -> NormalizedDeliveryRequest {
+    // Apply HEARTBEAT_NOTIFY_USER default if delivery.user not specified
+    // Note: Settings store fallback can be added in future enhancement
+    let default_user = optional_env("HEARTBEAT_NOTIFY_USER")
+        .ok()
+        .flatten();
+
     NormalizedDeliveryRequest {
         channel: string_field(params, "delivery", "channel", &["notify_channel"]),
-        user: string_field(params, "delivery", "user", &["notify_user"]),
+        user: string_field(params, "delivery", "user", &["notify_user"]).or(default_user),
     }
 }
 
@@ -1153,6 +1162,21 @@ impl Tool for RoutineCreateTool {
             updated_at: Utc::now(),
         };
 
+        // Pre-check for duplicate routine name before INSERT to provide a clear
+        // error message instead of a raw DB unique constraint violation.
+        if self
+            .store
+            .get_routine_by_name(&ctx.user_id, &normalized.name)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("DB error: {e}")))?
+            .is_some()
+        {
+            return Err(ToolError::InvalidParameters(format!(
+                "Routine '{}' already exists. Use routine_update to modify it.",
+                normalized.name
+            )));
+        }
+
         self.store
             .create_routine(&routine)
             .await
@@ -1321,6 +1345,7 @@ impl Tool for RoutineUpdateTool {
         let new_timezone = params
             .get("timezone")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty()) // Treat empty string as "not provided"
             .map(|tz| {
                 crate::timezone::parse_timezone(tz)
                     .map(|_| tz.to_string())

@@ -1,0 +1,202 @@
+{
+  "version": "1.0.0",
+  "wit_version": "0.3.0",
+  "type": "skill",
+  "name": "telegram-debug",
+  "description": "Diagnose and fix common Telegram integration issues automatically",
+  "tools": [
+    {
+      "name": "telegram_check_webhook",
+      "description": "Check webhook status with Telegram API",
+      "details": {
+        "method": "GET",
+        "url": "https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getWebhookInfo",
+        "checks": [
+          "url is set (not empty)",
+          "pending_update_count < 100",
+          "last_error_message is null",
+          "last_synchronization_error_date is not recent"
+        ],
+        "output_format": "structured_json"
+      }
+    },
+    {
+      "name": "telegram_check_tunnel",
+      "description": "Verify tunnel is alive and accessible",
+      "details": {
+        "checks": [
+          "cloudflared process running (pgrep)",
+          "tunnel URL resolves (DNS lookup)",
+          "endpoint accessible (HTTP 200/404)",
+          "tunnel URL matches webhook URL"
+        ],
+        "commands": [
+          "pgrep -f cloudflared",
+          "dig +short {tunnel_url}",
+          "curl -I -s -o /dev/null -w '%{http_code}' {tunnel_url}/webhook/telegram"
+        ],
+        "output_format": "structured_json"
+      }
+    },
+    {
+      "name": "telegram_check_config",
+      "description": "Validate IronClaw configuration (dm_policy, LLM model, DB)",
+      "details": {
+        "checks": [
+          "~/.ironclaw/.env exists",
+          "TELEGRAM_BOT_TOKEN format valid",
+          "LLM_MODEL is available (not stepfun-ai/step-3.5-flash)",
+          "DATABASE_URL connection works",
+          "dm_policy file readable",
+          "bot token authenticates with Telegram"
+        ],
+        "files": [
+          "~/.ironclaw/.env",
+          "~/.ironclaw/state/dm_policy"
+        ],
+        "api_tests": [
+          "https://api.telegram.org/bot{TOKEN}/getMe",
+          "https://api.nvcf.nvidia.com/v2/nvcf/pfx/functions/invoke"
+        ],
+        "output_format": "structured_json"
+      }
+    },
+    {
+      "name": "telegram_fix_common_issues",
+      "description": "Auto-fix common problems (restart tunnel, update webhook, etc.)",
+      "details": {
+        "auto_fixes": [
+          {
+            "issue": "tunnel_dead",
+            "detection": "cloudflared process not running",
+            "fix": "suggest_restart_command",
+            "command": "cloudflared tunnel --url http://localhost:3000"
+          },
+          {
+            "issue": "webhook_url_mismatch",
+            "detection": "webhook URL != tunnel URL",
+            "fix": "re_register_webhook",
+            "command": "curl -X POST https://api.telegram.org/bot{TOKEN}/setWebhook -d '{\"url\":\"{tunnel_url}/webhook/telegram\"}'"
+          },
+          {
+            "issue": "llm_model_invalid",
+            "detection": "model returns 404",
+            "fix": "update_env_file",
+            "change": {
+              "key": "LLM_MODEL",
+              "from": "stepfun-ai/step-3.5-flash",
+              "to": "z-ai/glm5"
+            }
+          },
+          {
+            "issue": "database_password_wrong",
+            "detection": "connection failed",
+            "fix": "suggest_correct_password",
+            "change": {
+              "key": "DATABASE_URL",
+              "password_from": "ironclaw_pass",
+              "password_to": "yourpass"
+            }
+          },
+          {
+            "issue": "dm_policy_pairing",
+            "detection": "dm_policy is 'pairing'",
+            "fix": "suggest_pair_command",
+            "message": "Send /pair to @YourBot to activate"
+          }
+        ],
+        "backup": {
+          "enabled": true,
+          "path": "~/.ironclaw/.env.backup",
+          "timestamp": true
+        },
+        "verification": {
+          "enabled": true,
+          "re_run_checks": true
+        },
+        "output_format": "structured_report"
+      }
+    },
+    {
+      "name": "telegram_full_report",
+      "description": "Generate comprehensive health report combining all checks",
+      "details": {
+        "combines": [
+          "telegram_check_webhook",
+          "telegram_check_tunnel",
+          "telegram_check_config"
+        ],
+        "sections": [
+          "Webhook Status",
+          "Tunnel Health",
+          "Configuration",
+          "Database",
+          "LLM Model",
+          "Pending Updates",
+          "Last Error",
+          "Recommendations"
+        ],
+        "output_format": "formatted_text"
+      }
+    }
+  ],
+  "activation": {
+    "keywords": [
+      "telegram debug",
+      "telegram check",
+      "telegram health",
+      "telegram not working",
+      "bot not responding",
+      "telegram issues",
+      "webhook check",
+      "tunnel check",
+      "telegram doctor",
+      "fix telegram"
+    ],
+    "patterns": [
+      "(?i)telegram.*not.*respond",
+      "(?i)bot.*not.*working",
+      "(?i)webhook.*issue",
+      "(?i)tunnel.*dead",
+      "(?i)telegram.*debug",
+      "(?i)check.*telegram"
+    ]
+  },
+  "permissions": {
+    "http": {
+      "allowed_hosts": [
+        "api.telegram.org",
+        "api.nvcf.nvidia.com"
+      ]
+    },
+    "filesystem": {
+      "read": [
+        "~/.ironclaw/.env",
+        "~/.ironclaw/state/*"
+      ],
+      "write": [
+        "~/.ironclaw/.env"
+      ]
+    },
+    "process": {
+      "execute": [
+        "pgrep",
+        "dig",
+        "nslookup",
+        "curl",
+        "cloudflared",
+        "psql"
+      ]
+    }
+  },
+  "rate_limits": {
+    "telegram_api": {
+      "requests_per_minute": 30,
+      "requests_per_hour": 500
+    },
+    "nvidia_api": {
+      "requests_per_minute": 60,
+      "requests_per_hour": 1000
+    }
+  }
+}

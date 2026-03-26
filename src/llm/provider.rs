@@ -493,6 +493,36 @@ pub fn sanitize_tool_messages(messages: &mut [ChatMessage]) {
     }
 }
 
+/// Ensure the last message in a conversation is not an assistant message.
+///
+/// Some LLM providers (e.g. Mistral) reject requests where the last message
+/// has role `assistant`. This function appends a minimal `"Continue."` user
+/// message when the last entry is an assistant turn, making the conversation
+/// valid for those providers.
+///
+/// When `model_name` is provided and the model has native thinking support
+/// (e.g. Qwen3, DeepSeek-R1), the function **removes** the trailing assistant
+/// prefill instead of appending a user message.  llama.cpp rejects assistant
+/// prefill when `enable_thinking=true` (the default for these models), so
+/// stripping the prefill avoids the error
+/// `"Assistant response prefill is incompatible with enable_thinking"`.
+pub fn ensure_last_message_role(messages: &mut Vec<ChatMessage>, model_name: Option<&str>) {
+    let is_thinking_model =
+        model_name.is_some_and(crate::llm::reasoning_models::has_native_thinking);
+
+    if let Some(last) = messages.last()
+        && last.role == Role::Assistant
+    {
+        if is_thinking_model {
+            // Strip the assistant prefill entirely — llama.cpp rejects it
+            // when native thinking is enabled.
+            messages.pop();
+        } else {
+            messages.push(ChatMessage::user("Continue."));
+        }
+    }
+}
+
 /// Represents a request parameter that may not be supported by all LLM providers.
 ///
 /// This typed enum replaces stringly-typed parameter names across the codebase,
@@ -776,5 +806,87 @@ mod tests {
         strip_unsupported_tool_params(&unsupported, &mut req);
 
         assert!(req.stop_sequences.is_none()); // safety: test assertion for explicit strip behavior
+    }
+
+    #[test]
+    fn test_ensure_last_message_role_appends_when_assistant() {
+        let mut messages = vec![
+            ChatMessage::user("Hello"),
+            ChatMessage::assistant("Hi there!"),
+        ];
+        ensure_last_message_role(&mut messages, None);
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[2].role, Role::User);
+        assert_eq!(messages[2].content, "Continue.");
+    }
+
+    #[test]
+    fn test_ensure_last_message_role_noop_when_user() {
+        let mut messages = vec![
+            ChatMessage::user("Hello"),
+            ChatMessage::assistant("Hi!"),
+            ChatMessage::user("Thanks"),
+        ];
+        let original_len = messages.len();
+        ensure_last_message_role(&mut messages, None);
+        assert_eq!(messages.len(), original_len);
+    }
+
+    #[test]
+    fn test_ensure_last_message_role_noop_when_empty() {
+        let mut messages: Vec<ChatMessage> = vec![];
+        ensure_last_message_role(&mut messages, None);
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn test_ensure_last_message_role_strips_prefill_for_thinking_model() {
+        let mut messages = vec![
+            ChatMessage::user("Hello"),
+            ChatMessage::assistant("Let me think..."),
+        ];
+        ensure_last_message_role(&mut messages, Some("qwen3-30b-a3b"));
+        // Assistant prefill should be stripped, not replaced with "Continue."
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, Role::User);
+    }
+
+    #[test]
+    fn test_ensure_last_message_role_noop_for_thinking_model_when_user_last() {
+        let mut messages = vec![
+            ChatMessage::user("Hello"),
+            ChatMessage::assistant("Hi!"),
+            ChatMessage::user("Thanks"),
+        ];
+        let original_len = messages.len();
+        ensure_last_message_role(&mut messages, Some("Qwen3.5-35B"));
+        assert_eq!(
+            messages.len(),
+            original_len,
+            "should not modify when last message is user"
+        );
+    }
+
+    #[test]
+    fn test_ensure_last_message_role_appends_for_non_thinking_model() {
+        // GPT-4o is not a thinking model — should still append "Continue."
+        let mut messages = vec![ChatMessage::user("Hello"), ChatMessage::assistant("Hi!")];
+        ensure_last_message_role(&mut messages, Some("gpt-4o"));
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[2].content, "Continue.");
+    }
+
+    #[test]
+    fn test_ensure_last_message_role_strips_prefill_for_deepseek_r1() {
+        let mut messages = vec![
+            ChatMessage::user("Solve this"),
+            ChatMessage::assistant("<thinking>"),
+        ];
+        ensure_last_message_role(&mut messages, Some("deepseek-r1-distill-qwen-32b"));
+        assert_eq!(
+            messages.len(),
+            1,
+            "DeepSeek-R1 is a thinking model; prefill should be stripped"
+        );
     }
 }

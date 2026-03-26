@@ -1,0 +1,149 @@
+#!/bin/bash
+# Telegram Webhook Fix Verification Script
+# Run this after making changes in Cloudflare dashboard
+
+set -e
+
+BOT_TOKEN="7577428997:AAFpUZ1V9CZo9xfra49WyJarkpvv0fi6aIg"
+WEBHOOK_URL="https://ironclaw.kutasi.dev/webhook/telegram"
+
+echo "========================================="
+echo "Telegram Webhook Fix Verification"
+echo "========================================="
+echo ""
+
+# Function to check webhook status
+check_webhook() {
+    echo "📊 Checking webhook status..."
+    local webhook_info=$(curl -s "https://api.telegram.org/bot$BOT_TOKEN/getWebhookInfo")
+    
+    local last_error=$(echo "$webhook_info" | jq -r '.result.last_error_message // "null"')
+    local pending_count=$(echo "$webhook_info" | jq -r '.result.pending_update_count')
+    local last_attempt=$(echo "$webhook_info" | jq -r '.result.last_error_date // 0')
+    
+    echo "   Last Error: $last_error"
+    echo "   Pending Updates: $pending_count"
+    
+    if [ "$last_error" == "null" ] || [ -z "$last_error" ]; then
+        echo "   ✅ No errors reported!"
+        return 0
+    else
+        echo "   ❌ Error still present"
+        return 1
+    fi
+}
+
+# Function to re-register webhook
+register_webhook() {
+    echo ""
+    echo "🔄 Re-registering webhook..."
+    local result=$(curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/setWebhook" \
+        -H "Content-Type: application/json" \
+        -d "{\"url\":\"$WEBHOOK_URL\",\"allowed_updates\":[\"message\",\"edited_message\"]}")
+    
+    local ok=$(echo "$result" | jq -r '.ok')
+    local desc=$(echo "$result" | jq -r '.description // "no description"')
+    
+    if [ "$ok" == "true" ]; then
+        echo "   ✅ Webhook registered: $desc"
+    else
+        echo "   ❌ Failed to register: $desc"
+        return 1
+    fi
+}
+
+# Function to test webhook endpoint manually
+test_endpoint() {
+    echo ""
+    echo "🧪 Testing webhook endpoint manually..."
+    local response=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$WEBHOOK_URL" \
+        -H "Content-Type: application/json" \
+        -d '{"update_id":999,"message":{"message_id":1,"from":{"id":123},"chat":{"id":123},"text":"test"}}')
+    
+    if [ "$response" == "200" ]; then
+        echo "   ✅ Endpoint responds with HTTP 200"
+    else
+        echo "   ❌ Endpoint responds with HTTP $response"
+        return 1
+    fi
+}
+
+# Function to check IronClaw logs
+check_logs() {
+    echo ""
+    echo "📋 Checking IronClaw logs for recent webhook requests..."
+    if [ -f /tmp/ironclaw.log ]; then
+        local recent_requests=$(tail -100 /tmp/ironclaw.log | grep -c "Webhook request received" || echo "0")
+        echo "   Recent webhook requests in logs: $recent_requests"
+        
+        if [ "$recent_requests" -gt 0 ]; then
+            echo "   ✅ Webhook requests are reaching IronClaw"
+            tail -20 /tmp/ironclaw.log | grep -E "(webhook|telegram)" | tail -5
+        else
+            echo "   ⚠️  No recent webhook requests in logs"
+        fi
+    else
+        echo "   ⚠️  IronClaw log file not found"
+    fi
+}
+
+# Function to check cloudflared logs
+check_tunnel_logs() {
+    echo ""
+    echo "🚇 Checking Cloudflare tunnel logs..."
+    if [ -f /tmp/cloudflared-ironclaw.log ]; then
+        local recent_errors=$(tail -100 /tmp/cloudflared-ironclaw.log | grep -c "error" || echo "0")
+        echo "   Recent errors in tunnel logs: $recent_errors"
+        
+        if [ "$recent_errors" -gt 0 ]; then
+            echo "   Last 3 errors:"
+            tail -20 /tmp/cloudflared-ironclaw.log | grep "error" | tail -3
+        else
+            echo "   ✅ No recent errors"
+        fi
+    else
+        echo "   ⚠️  Cloudflared log file not found"
+    fi
+}
+
+# Main execution
+echo "Step 1: Testing webhook endpoint (manual curl)..."
+test_endpoint
+
+echo ""
+echo "Step 2: Checking current webhook status..."
+check_webhook || true
+
+echo ""
+echo "Step 3: Re-registering webhook to force retry..."
+register_webhook
+
+echo ""
+echo "⏳ Waiting 10 seconds for Telegram to retry webhook..."
+sleep 10
+
+echo ""
+echo "Step 4: Checking webhook status after re-registration..."
+check_webhook || true
+
+echo ""
+echo "Step 5: Checking IronClaw logs..."
+check_logs
+
+echo ""
+echo "Step 6: Checking tunnel logs..."
+check_tunnel_logs
+
+echo ""
+echo "========================================="
+echo "Summary"
+echo "========================================="
+echo ""
+echo "If you still see '403 Forbidden' error:"
+echo "1. Check Cloudflare Dashboard → Security → Bots"
+echo "2. Disable Bot Fight Mode or add exception for /webhook/telegram"
+echo "3. Check Security → WAF → Custom rules"
+echo "4. Check Zero Trust → Access → Applications"
+echo ""
+echo "Reference: .tmp/TELEGRAM_403_DIAGNOSIS.md"
+echo ""

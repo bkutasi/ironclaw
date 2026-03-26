@@ -17,8 +17,8 @@ use crate::tools::builder::{
     BuildSoftwareTool, BuilderConfig, LlmSoftwareBuilder, SoftwareBuilder,
 };
 use crate::tools::builtin::{
-    ApplyPatchTool, CancelJobTool, CreateJobTool, EchoTool, ExtensionInfoTool, HttpTool,
-    JobEventsTool, JobPromptTool, JobStatusTool, JsonTool, ListDirTool, ListJobsTool,
+    ApplyPatchTool, CancelJobTool, CreateJobTool, DoneTool, EchoTool, ExtensionInfoTool,
+    HttpTool, JobEventsTool, JobPromptTool, JobStatusTool, JsonTool, ListDirTool, ListJobsTool,
     MemoryReadTool, MemorySearchTool, MemoryTreeTool, MemoryWriteTool, PromptQueue, ReadFileTool,
     ShellTool, SkillInstallTool, SkillListTool, SkillRemoveTool, SkillSearchTool, TimeTool,
     ToolActivateTool, ToolAuthTool, ToolInstallTool, ToolListTool, ToolRemoveTool, ToolSearchTool,
@@ -53,6 +53,8 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "list_jobs",
     "job_status",
     "cancel_job",
+    "job_events",
+    "job_prompt",
     "build_software",
     "tool_search",
     "tool_install",
@@ -60,6 +62,8 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "tool_activate",
     "tool_list",
     "tool_remove",
+    "tool_upgrade",
+    "extension_info",
     "routine_create",
     "routine_list",
     "routine_update",
@@ -71,6 +75,8 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "skill_search",
     "skill_install",
     "skill_remove",
+    "secret_list",
+    "secret_delete",
     "message",
     "web_fetch",
     "restart",
@@ -78,6 +84,7 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "image_edit",
     "image_analyze",
     "tool_info",
+    "done",
 ];
 
 /// Registry of available tools.
@@ -182,6 +189,15 @@ impl ToolRegistry {
         self.tools.read().await.contains_key(name)
     }
 
+    /// Check if a tool name is a built-in (protected) tool.
+    ///
+    /// Built-in tools are defined in `PROTECTED_TOOL_NAMES` and cannot be
+    /// shadowed by dynamic registrations. Used to exclude builtin tools
+    /// from failure tracking — only WASM tools can be rebuilt by self-repair.
+    pub fn is_builtin(name: &str) -> bool {
+        PROTECTED_TOOL_NAMES.contains(&name)
+    }
+
     /// List all tool names.
     pub async fn list(&self) -> Vec<String> {
         self.tools.read().await.keys().cloned().collect()
@@ -248,6 +264,8 @@ impl ToolRegistry {
         }
         self.register_sync(Arc::new(http));
 
+        self.register_sync(Arc::new(DoneTool::new()));
+
         tracing::debug!("Registered {} built-in tools", self.count());
     }
 
@@ -265,7 +283,7 @@ impl ToolRegistry {
     /// Register only orchestrator-domain tools (safe for the main process).
     ///
     /// This registers tools that don't touch the filesystem or run shell commands:
-    /// echo, time, json, http. Use this when `allow_local_tools = false` and
+    /// echo, time, json, http, done. Use this when `allow_local_tools = false` and
     /// container-domain tools should only be available inside sandboxed containers.
     pub fn register_orchestrator_tools(&self) {
         self.register_builtin_tools();

@@ -386,15 +386,27 @@ Report when the job is complete or if you encounter issues you cannot resolve."#
             }
         }
 
+        // ADR-002: Build system prompts once for 3-phase force_text defense
+        let tool_defs = reason_ctx.available_tools.clone();
+        let cached_prompt = reasoning.build_system_prompt_with_tools(&tool_defs);
+        let cached_prompt_no_tools = reasoning.build_system_prompt_with_tools(&[]);
+        reason_ctx.system_prompt = Some(cached_prompt.clone());
+        let nudge_at = max_iterations.saturating_sub(1);
+        let force_text_at = max_iterations;
+
         // Build the delegate and run the shared agentic loop
         let delegate = JobDelegate {
             worker: self,
             rx: tokio::sync::Mutex::new(rx),
             consecutive_rate_limits: std::sync::atomic::AtomicUsize::new(0),
+            cached_prompt,
+            cached_prompt_no_tools,
+            nudge_at,
+            force_text_at,
         };
 
         let config = AgenticLoopConfig {
-            max_iterations,
+            max_iterations: max_iterations + 1, // ADR-002: +1 for hard ceiling past force_text
             enable_tool_intent_nudge: true,
             max_tool_intent_nudges: 2,
         };
@@ -801,17 +813,24 @@ Report when the job is complete or if you encounter issues you cannot resolve."#
                     e
                 );
 
-                // Record failure for self-repair tracking
-                if let Some(store) = self.store() {
-                    let store = store.clone();
-                    let tool_name = selection.tool_name.clone();
-                    let error_msg = e.to_string();
-                    tokio::spawn(async move {
-                        if let Err(db_err) = store.record_tool_failure(&tool_name, &error_msg).await
-                        {
-                            tracing::warn!("Failed to record tool failure: {}", db_err);
-                        }
-                    });
+                // Record failure for self-repair tracking — skip builtin tools.
+                // Builtin tools (memory_read, message, job_status, routine_update, etc.)
+                // fail naturally from invalid params or missing paths and cannot be
+                // repaired by the WASM builder. Only WASM tools should accumulate
+                // failure counts. See living-notes.md known issue (lines 76, 108).
+                if !ToolRegistry::is_builtin(&selection.tool_name) {
+                    if let Some(store) = self.store() {
+                        let store = store.clone();
+                        let tool_name = selection.tool_name.clone();
+                        let error_msg = e.to_string();
+                        tokio::spawn(async move {
+                            if let Err(db_err) =
+                                store.record_tool_failure(&tool_name, &error_msg).await
+                            {
+                                tracing::warn!("Failed to record tool failure: {}", db_err);
+                            }
+                        });
+                    }
                 }
 
                 let error_preview = {
@@ -1109,6 +1128,14 @@ struct JobDelegate<'a> {
     rx: tokio::sync::Mutex<&'a mut mpsc::Receiver<WorkerMessage>>,
     /// Tracks consecutive rate-limit errors to fail fast instead of burning iterations.
     consecutive_rate_limits: std::sync::atomic::AtomicUsize,
+    /// ADR-002: Pre-built system prompt with tools (normal iterations).
+    cached_prompt: String,
+    /// ADR-002: Pre-built system prompt without tools (force_text final iteration).
+    cached_prompt_no_tools: String,
+    /// ADR-002: Iteration at which to inject the nudge message.
+    nudge_at: usize,
+    /// ADR-002: Iteration at which to force text-only responses.
+    force_text_at: usize,
 }
 
 impl<'a> JobDelegate<'a> {
@@ -1248,8 +1275,34 @@ impl<'a> LoopDelegate for JobDelegate<'a> {
     async fn before_llm_call(
         &self,
         reason_ctx: &mut ReasoningContext,
-        _iteration: usize,
+        iteration: usize,
     ) -> Option<LoopOutcome> {
+        // ADR-002: Phase 1 — Nudge when approaching the limit
+        if iteration == self.nudge_at {
+            reason_ctx.messages.push(ChatMessage::system(
+                "You are approaching the tool call limit. \
+                 Provide your best final answer on the next response \
+                 using the information you have gathered so far. \
+                 Do not call any more tools.",
+            ));
+        }
+
+        // ADR-002: Phase 2 — Force text at the limit
+        let force_text = iteration >= self.force_text_at;
+        reason_ctx.system_prompt = Some(if force_text {
+            self.cached_prompt_no_tools.clone()
+        } else {
+            self.cached_prompt.clone()
+        });
+        reason_ctx.force_text = force_text;
+
+        if force_text {
+            tracing::info!(
+                iteration,
+                "JobDelegate: forcing text-only response (iteration limit reached)"
+            );
+        }
+
         // Refresh tool definitions so newly built tools become visible
         reason_ctx.available_tools = self.worker.tools().tool_definitions().await;
 
@@ -1368,6 +1421,9 @@ impl<'a> LoopDelegate for JobDelegate<'a> {
         content: Option<String>,
         reason_ctx: &mut ReasoningContext,
     ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+        // ADR-001: Save content for done tool detection before it's moved
+        let content_for_done = content.clone();
+
         if let Some(ref text) = content {
             self.worker.log_event(
                 "message",
@@ -1456,6 +1512,21 @@ impl<'a> LoopDelegate for JobDelegate<'a> {
                 self.worker
                     .process_tool_result_job(reason_ctx, selection, result.result)
                     .await?;
+            }
+        }
+
+        // ADR-001: If done was called, break the agentic loop immediately
+        for tc in &tool_calls {
+            if tc.name == "done" {
+                let output = content_for_done.unwrap_or_default();
+                if let Err(e) = self.worker.mark_completed().await {
+                    tracing::warn!(
+                        "Failed to mark job {} as completed via done tool: {}",
+                        self.worker.job_id,
+                        e
+                    );
+                }
+                return Ok(Some(LoopOutcome::Response(output)));
             }
         }
 

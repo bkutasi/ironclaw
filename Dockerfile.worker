@@ -65,5 +65,8 @@ RUN useradd -m -u 1000 -s /bin/bash sandbox \
 USER sandbox
 WORKDIR /workspace
 
+# Enable debug logging so container activity is visible in docker logs.
+ENV RUST_LOG=debug
+
 # The orchestrator passes the full command via Docker cmd.
 ENTRYPOINT ["ironclaw"]

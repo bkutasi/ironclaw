@@ -1,0 +1,36 @@
+{
+  "version": "1.0",
+  "last_updated": "2026-03-26T00:00:00Z",
+  "topic": "MCP Tool Repair Mechanisms",
+  "files": [
+    {
+      "filename": "debugging-common-errors.md",
+      "topic": "Common MCP errors and fixes",
+      "categories": ["debugging", "errors", "troubleshooting"],
+      "source": "Markaicode & MCP Official Docs",
+      "fetched": "2026-03-26"
+    },
+    {
+      "filename": "builder-not-available-error.md",
+      "topic": "Fix 'Builder not available' and 'Not connected' errors",
+      "categories": ["windows", "session-management", "errors"],
+      "source": "GitHub Issues & Microsoft Q&A",
+      "fetched": "2026-03-26"
+    },
+    {
+      "filename": "web-search-configuration.md",
+      "topic": "Web-search tool configuration",
+      "categories": ["web-search", "configuration", "tavily", "brave"],
+      "source": "LocalLLM.in & Glukhov.org",
+      "fetched": "2026-03-26"
+    },
+    {
+      "filename": "common-causes-broken-tools.md",
+      "topic": "Common causes of broken tools",
+      "categories": ["troubleshooting", "best-practices", "prevention"],
+      "source": "Tetrate.io & Stainless.com",
+      "fetched": "2026-03-26"
+    }
+  ],
+  "summary": "Comprehensive documentation on MCP tool repair mechanisms, covering 5 main error categories, Windows-specific fixes, web-search configuration, and systematic troubleshooting workflows"
+}

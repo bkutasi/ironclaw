@@ -151,12 +151,26 @@ Job: {}
 Description: {}
 
 You have tools for shell commands, file operations, and code editing.
-Work independently to complete this job. When finished, your final message MUST include the phrase "The job is complete" to signal termination."#,
+Work independently to complete this job.
+
+When you are finished, call the `done` tool with a summary of what you accomplished.
+Do NOT just stop responding — always call `done` to signal completion."#,
             job.title, job.description
         )));
 
         // Load tool definitions
-        reason_ctx.available_tools = self.tools.tool_definitions().await;
+        let tool_defs = self.tools.tool_definitions().await;
+        reason_ctx.available_tools = tool_defs.clone();
+
+        // Build system prompts once: with tools (normal) and without (force_text).
+        let cached_prompt = reasoning.build_system_prompt_with_tools(&tool_defs);
+        let cached_prompt_no_tools = reasoning.build_system_prompt_with_tools(&[]);
+        reason_ctx.system_prompt = Some(cached_prompt.clone());
+
+        // 3-phase defense thresholds against infinite tool-call loops.
+        let max_tool_iterations = self.config.max_iterations as usize;
+        let force_text_at = max_tool_iterations;
+        let nudge_at = max_tool_iterations.saturating_sub(1);
 
         // Shared iteration tracker — read after the loop to report accurate counts.
         let iteration_tracker = Arc::new(Mutex::new(0u32));
@@ -170,10 +184,15 @@ Work independently to complete this job. When finished, your final message MUST 
                 extra_env: self.extra_env.clone(),
                 last_output: Mutex::new(String::new()),
                 iteration_tracker: iteration_tracker.clone(),
+                cached_prompt,
+                cached_prompt_no_tools,
+                nudge_at,
+                force_text_at,
             };
 
+            // Hard ceiling: one past force_text_at (safety net).
             let config = AgenticLoopConfig {
-                max_iterations: self.config.max_iterations as usize,
+                max_iterations: max_tool_iterations + 1,
                 enable_tool_intent_nudge: true,
                 max_tool_intent_nudges: 2,
             };
@@ -304,6 +323,14 @@ struct ContainerDelegate {
     /// Tracks the current iteration — shared with the outer `run` method so
     /// `CompletionReport` can include accurate iteration counts.
     iteration_tracker: Arc<Mutex<u32>>,
+    /// Pre-built system prompt with tools (normal iterations).
+    cached_prompt: String,
+    /// Pre-built system prompt without tools (force_text final iteration).
+    cached_prompt_no_tools: String,
+    /// Iteration at which to inject the nudge message.
+    nudge_at: usize,
+    /// Iteration at which to force text-only responses.
+    force_text_at: usize,
 }
 
 impl ContainerDelegate {
@@ -355,19 +382,45 @@ impl LoopDelegate for ContainerDelegate {
         reason_ctx: &mut ReasoningContext,
         iteration: usize,
     ) -> Option<LoopOutcome> {
-        let iteration = iteration as u32;
-        *self.iteration_tracker.lock().await = iteration;
+        let iteration_u32 = iteration as u32;
+        *self.iteration_tracker.lock().await = iteration_u32;
 
         // Report progress every 5 iterations
-        if iteration % 5 == 1 {
+        if iteration_u32 % 5 == 1 {
             let _ = self
                 .client
                 .report_status(&StatusUpdate {
                     state: "in_progress".to_string(),
-                    message: Some(format!("Iteration {}", iteration)),
-                    iteration,
+                    message: Some(format!("Iteration {}", iteration_u32)),
+                    iteration: iteration_u32,
                 })
                 .await;
+        }
+
+        // Phase 1: Nudge — inject a warning when approaching the limit.
+        if iteration == self.nudge_at {
+            reason_ctx.messages.push(ChatMessage::system(
+                "You are approaching the tool call limit. \
+                 Provide your best final answer on the next response \
+                 using the information you have gathered so far. \
+                 Do not call any more tools.",
+            ));
+        }
+
+        // Phase 2: Force text — swap system prompt and strip tools at the limit.
+        let force_text = iteration >= self.force_text_at;
+        reason_ctx.system_prompt = Some(if force_text {
+            self.cached_prompt_no_tools.clone()
+        } else {
+            self.cached_prompt.clone()
+        });
+        reason_ctx.force_text = force_text;
+
+        if force_text {
+            tracing::info!(
+                iteration,
+                "Forcing text-only response (iteration limit reached)"
+            );
         }
 
         // Poll for follow-up prompts from the user
@@ -495,6 +548,15 @@ impl LoopDelegate for ContainerDelegate {
             // Use shared result processing
             let (_, message) = process_tool_result(&self.safety, &tc.name, &tc.id, &result);
             reason_ctx.messages.push(message);
+
+            // If done was called, break the agentic loop immediately
+            if tc.name == "done" {
+                let output = match result {
+                    Ok(o) => o,
+                    Err(e) => format!("Error: {}", e),
+                };
+                return Ok(Some(LoopOutcome::Response(output)));
+            }
         }
 
         Ok(None)

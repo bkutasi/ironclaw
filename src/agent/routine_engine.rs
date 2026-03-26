@@ -565,6 +565,13 @@ impl RoutineEngine {
                         job_id = %job_id,
                         "Failed to fetch linked job: {}", e
                     );
+                    // Finalize the run as failed to prevent infinite recovery loop
+                    self.complete_dispatched_run(
+                        &run,
+                        RunStatus::Failed,
+                        &format!("Failed to fetch linked job: {e}"),
+                    )
+                    .await;
                     continue;
                 }
             };

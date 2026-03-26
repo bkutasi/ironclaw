@@ -1,0 +1,175 @@
+{
+  "name": "tunnel-monitor",
+  "version": "1.0.0",
+  "description": "Monitor and auto-recover Cloudflare tunnels for IronClaw",
+  "tools": [
+    {
+      "name": "tunnel_check_status",
+      "description": "Check if Cloudflare tunnel is alive and accessible. Verifies process running, URL available, DNS resolution, endpoint accessibility, and optional Telegram webhook sync.",
+      "parameters": {
+        "tunnel_url": {
+          "type": "string",
+          "required": false,
+          "description": "Cloudflare tunnel URL (reads from /tmp/cloudflared-ephemeral-url.txt if not provided)"
+        },
+        "check_telegram": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "description": "Whether to check Telegram webhook sync"
+        },
+        "telegram_bot_token": {
+          "type": "string",
+          "required": false,
+          "description": "Telegram bot token for webhook verification"
+        },
+        "telegram_webhook_path": {
+          "type": "string",
+          "required": false,
+          "default": "/webhook/telegram",
+          "description": "Webhook path to verify"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "required": false,
+          "default": 5,
+          "description": "Request timeout in seconds"
+        }
+      },
+      "returns": "TunnelHealthReport with status, checks array, tunnel_url, process_pid, and recovery_actions"
+    },
+    {
+      "name": "tunnel_test_endpoint",
+      "description": "Test webhook endpoint accessibility and measure response time. Returns HTTP status code, response time, and size.",
+      "parameters": {
+        "tunnel_url": {
+          "type": "string",
+          "required": false,
+          "description": "Cloudflare tunnel URL (reads from file if not provided)"
+        },
+        "path": {
+          "type": "string",
+          "required": false,
+          "default": "/webhook/telegram",
+          "description": "Endpoint path to test"
+        },
+        "method": {
+          "type": "string",
+          "required": false,
+          "default": "GET",
+          "description": "HTTP method for test request"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "required": false,
+          "default": 5,
+          "description": "Request timeout in seconds"
+        }
+      },
+      "returns": "Object with url, status_code, response_time_ms, response_size_bytes, success boolean, and optional error"
+    },
+    {
+      "name": "tunnel_restart_if_dead",
+      "description": "Auto-restart dead Cloudflare tunnel. Checks tunnel health, kills old process if needed, starts new tunnel, extracts URL, and optionally updates Telegram webhook.",
+      "parameters": {
+        "local_port": {
+          "type": "integer",
+          "required": false,
+          "default": 8081,
+          "description": "Local port for tunnel to expose"
+        },
+        "telegram_bot_token": {
+          "type": "string",
+          "required": false,
+          "description": "Telegram bot token for webhook update"
+        },
+        "telegram_webhook_path": {
+          "type": "string",
+          "required": false,
+          "default": "/webhook/telegram",
+          "description": "Webhook path to register with Telegram"
+        }
+      },
+      "returns": "RecoveryResult with success boolean, new_url, new_pid, webhook_updated boolean, error, and actions array"
+    },
+    {
+      "name": "tunnel_update_webhook",
+      "description": "Update Telegram webhook with current tunnel URL. Compares expected vs current webhook URL and updates if mismatch detected.",
+      "parameters": {
+        "bot_token": {
+          "type": "string",
+          "required": true,
+          "description": "Telegram bot token"
+        },
+        "tunnel_url": {
+          "type": "string",
+          "required": false,
+          "description": "Tunnel URL (reads from file if not provided)"
+        },
+        "webhook_path": {
+          "type": "string",
+          "required": false,
+          "default": "/webhook/telegram",
+          "description": "Webhook path to append to tunnel URL"
+        },
+        "drop_pending_updates": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "description": "Whether to drop pending updates when updating webhook"
+        }
+      },
+      "returns": "WebhookSyncResult with updated boolean, current_url, expected_url, telegram_info, and optional error"
+    }
+  ],
+  "output_formats": {
+    "healthy_tunnel": {
+      "status": "healthy",
+      "checks": [
+        {"name": "Process", "status": "pass", "message": "cloudflared running (PID: 123456)"},
+        {"name": "URL", "status": "pass", "message": "https://abc123.trycloudflare.com"},
+        {"name": "DNS", "status": "pass", "message": "Resolved (104.16.230.132)"},
+        {"name": "Endpoint", "status": "pass", "message": "Accessible (HTTP 200)"},
+        {"name": "Telegram Webhook", "status": "pass", "message": "Synced"}
+      ],
+      "tunnel_url": "https://abc123.trycloudflare.com",
+      "process_pid": 123456
+    },
+    "dead_tunnel": {
+      "status": "process_not_running",
+      "checks": [
+        {"name": "Process", "status": "fail", "message": "cloudflared not running"}
+      ]
+    },
+    "recovery_success": {
+      "success": true,
+      "new_url": "https://xyz789.trycloudflare.com",
+      "new_pid": 234567,
+      "webhook_updated": true,
+      "actions": [
+        "Killing old cloudflared process",
+        "Starting new cloudflared tunnel",
+        "New tunnel started (PID: 234567)",
+        "New URL: https://xyz789.trycloudflare.com",
+        "URL saved to file",
+        "Updating Telegram webhook",
+        "Webhook updated successfully"
+      ]
+    }
+  },
+  "error_codes": {
+    "530": "Origin DNS error - tunnel not connected",
+    "522": "Connection timed out - tunnel unreachable",
+    "521": "Web server is down - origin service unreachable",
+    "502": "Bad Gateway - origin service error",
+    "524": "Timeout occurred - origin took too long",
+    "1033": "Cloudflare is unable to reach your origin server"
+  },
+  "dependencies": {
+    "system_commands": ["cloudflared", "pgrep", "pkill", "curl", "dig"],
+    "external_apis": ["Telegram Bot API"]
+  },
+  "file_paths": {
+    "tunnel_url_file": "/tmp/cloudflared-ephemeral-url.txt"
+  }
+}

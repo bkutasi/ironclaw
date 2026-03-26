@@ -39,3 +39,8 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# OpenAgents runtime
+.opencode/node_modules/
+.opencode/bun.lock
+.opencode/package.json
