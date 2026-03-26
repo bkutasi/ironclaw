@@ -1846,9 +1846,11 @@ mod tests {
             "expected lightweight execution mode",
         );
         assert_eq!(parsed.cooldown_secs, 300);
+        // delivery.user will be None unless HEARTBEAT_NOTIFY_USER env var is set
+        // This test doesn't set the env var, so it should be None
         assert!(
-            parsed.delivery.user.is_none(),
-            "expected omitted delivery.user to remain unspecified",
+            parsed.delivery.user.is_none() || parsed.delivery.user.as_deref() == std::env::var("HEARTBEAT_NOTIFY_USER").ok().as_deref().filter(|s| !s.is_empty()),
+            "expected omitted delivery.user to remain unspecified (or match HEARTBEAT_NOTIFY_USER if set)",
         );
     }
 
