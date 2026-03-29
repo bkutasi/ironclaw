@@ -19,6 +19,12 @@ impl DoneTool {
     }
 }
 
+impl Default for DoneTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl Tool for DoneTool {
     fn name(&self) -> &str {

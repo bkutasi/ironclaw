@@ -818,19 +818,18 @@ Report when the job is complete or if you encounter issues you cannot resolve."#
                 // fail naturally from invalid params or missing paths and cannot be
                 // repaired by the WASM builder. Only WASM tools should accumulate
                 // failure counts. See living-notes.md known issue (lines 76, 108).
-                if !ToolRegistry::is_builtin(&selection.tool_name) {
-                    if let Some(store) = self.store() {
-                        let store = store.clone();
-                        let tool_name = selection.tool_name.clone();
-                        let error_msg = e.to_string();
-                        tokio::spawn(async move {
-                            if let Err(db_err) =
-                                store.record_tool_failure(&tool_name, &error_msg).await
-                            {
-                                tracing::warn!("Failed to record tool failure: {}", db_err);
-                            }
-                        });
-                    }
+                if !ToolRegistry::is_builtin(&selection.tool_name)
+                    && let Some(store) = self.store()
+                {
+                    let store = store.clone();
+                    let tool_name = selection.tool_name.clone();
+                    let error_msg = e.to_string();
+                    tokio::spawn(async move {
+                        if let Err(db_err) = store.record_tool_failure(&tool_name, &error_msg).await
+                        {
+                            tracing::warn!("Failed to record tool failure: {}", db_err);
+                        }
+                    });
                 }
 
                 let error_preview = {

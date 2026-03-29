@@ -901,9 +901,7 @@ fn parse_routine_execution(
 fn parse_routine_delivery(params: &Value) -> NormalizedDeliveryRequest {
     // Apply HEARTBEAT_NOTIFY_USER default if delivery.user not specified
     // Note: Settings store fallback can be added in future enhancement
-    let default_user = optional_env("HEARTBEAT_NOTIFY_USER")
-        .ok()
-        .flatten();
+    let default_user = optional_env("HEARTBEAT_NOTIFY_USER").ok().flatten();
 
     NormalizedDeliveryRequest {
         channel: string_field(params, "delivery", "channel", &["notify_channel"]),
@@ -1849,7 +1847,12 @@ mod tests {
         // delivery.user will be None unless HEARTBEAT_NOTIFY_USER env var is set
         // This test doesn't set the env var, so it should be None
         assert!(
-            parsed.delivery.user.is_none() || parsed.delivery.user.as_deref() == std::env::var("HEARTBEAT_NOTIFY_USER").ok().as_deref().filter(|s| !s.is_empty()),
+            parsed.delivery.user.is_none()
+                || parsed.delivery.user.as_deref()
+                    == std::env::var("HEARTBEAT_NOTIFY_USER")
+                        .ok()
+                        .as_deref()
+                        .filter(|s| !s.is_empty()),
             "expected omitted delivery.user to remain unspecified (or match HEARTBEAT_NOTIFY_USER if set)",
         );
     }
